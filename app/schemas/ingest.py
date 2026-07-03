@@ -5,6 +5,13 @@ class IngestRequest(BaseModel):
     file_id: str = Field(alias="fileId")
     knowledge_base_id: str = Field(alias="knowledgeBaseId")
     storage_path: str = Field(alias="storagePath")
+    storage_provider: str | None = Field(default=None, alias="storageProvider")
+    bucket: str | None = None
+    object_key: str | None = Field(default=None, alias="objectKey")
+    original_name: str | None = Field(default=None, alias="originalName")
+    content_type: str | None = Field(default=None, alias="contentType")
+    file_size: int | None = Field(default=None, alias="fileSize")
+    visibility: str | None = None
     user_id: str | None = Field(default=None, alias="userId")
 
 

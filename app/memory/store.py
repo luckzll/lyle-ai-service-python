@@ -96,13 +96,13 @@ def recall_memory(
             semantic = _search_qdrant_memory(user_id, question, candidate_limit)
         except Exception as exception:
             _mark_vector_backend_failure("qdrant_memory", exception)
-            logger.exception("Qdrant memory recall failed. user_id=%s", user_id)
+            _log_vector_backend_failure("qdrant_memory", "recall", user_id, exception)
             semantic = []
         try:
             vector = _search_milvus_memory(user_id, question, candidate_limit)
         except Exception as exception:
             _mark_vector_backend_failure("milvus_memory", exception)
-            logger.exception("Milvus memory recall failed. user_id=%s", user_id)
+            _log_vector_backend_failure("milvus_memory", "recall", user_id, exception)
             vector = []
     retrieved = _merge_vector_memories(question, semantic, vector, settings.memory_recall_limit)
 
@@ -168,7 +168,7 @@ def remember_interaction(user_id: str, conversation_id: str | None, question: st
     except Exception as exception:
         _mark_vector_backend_failure("qdrant_memory", exception)
         vector_memory_write["failedBackends"].append("qdrant")  # type: ignore[union-attr]
-        logger.exception("Qdrant memory write failed. user_id=%s conversation_id=%s", user_id, conversation_id)
+        _log_vector_backend_failure("qdrant_memory", "write", user_id, exception, conversation_id)
     try:
         _upsert_milvus_memory(user_id, conversation_id, text)
         if settings.milvus_enabled:
@@ -176,7 +176,7 @@ def remember_interaction(user_id: str, conversation_id: str | None, question: st
     except Exception as exception:
         _mark_vector_backend_failure("milvus_memory", exception)
         vector_memory_write["failedBackends"].append("milvus")  # type: ignore[union-attr]
-        logger.exception("Milvus memory write failed. user_id=%s conversation_id=%s", user_id, conversation_id)
+        _log_vector_backend_failure("milvus_memory", "write", user_id, exception, conversation_id)
     return {"vectorMemoryWrite": vector_memory_write, "candidateMemories": candidate_memories}
 
 
@@ -211,12 +211,13 @@ def extract_structured_memory(user_id: str, conversation_id: str | None, text: s
 
     candidate_memories: list[dict[str, object]] = []
     for key, value, confidence in candidates:
-        candidate_key = _pending_structured_memory_key(user_id, conversation_id, text, key, value)
+        existing_pending = _find_pending_structured_memory(user_id, key, value)
+        candidate_key = existing_pending.key if existing_pending else _pending_structured_memory_key(user_id, conversation_id, text, key, value)
         item = upsert_structured_memory(
             user_id,
             candidate_key,
             value,
-            source=text[:240],
+            source=_format_structured_memory_source(conversation_id, text),
             confidence=confidence,
             status="pending",
         )
@@ -233,7 +234,10 @@ def format_memory_context(memory: dict[str, object]) -> str:
 
     structured = memory.get("structured") or []
     if structured:
-        facts = [f"{item['key']}={item['value']}" for item in structured]  # type: ignore[index]
+        facts = [
+            _format_structured_context_fact(item)
+            for item in structured  # type: ignore[arg-type]
+        ]
         parts.append("结构化记忆：" + "；".join(facts))
 
     retrieved = memory.get("retrieved") or []
@@ -369,6 +373,29 @@ def _should_write_vector_memory(question: str, text: str) -> tuple[bool, str]:
     return True, "default_keep"
 
 
+def _format_structured_context_fact(item: dict[str, object]) -> str:
+    key = item.get("key")
+    value = item.get("value")
+    confidence = float(item.get("confidence") or 1.0)
+    if confidence < 0.75:
+        return f"{key}={value}(低置信度，仅作参考)"
+    return f"{key}={value}"
+
+
+def _format_structured_memory_source(conversation_id: str | None, text: str) -> str:
+    ref = _structured_memory_source_ref(conversation_id)
+    cleaned = text[:240]
+    return f"source_ref:{ref}\n{cleaned}" if ref else cleaned
+
+
+def _structured_memory_source_ref(conversation_id: str | None) -> str:
+    if not conversation_id:
+        return ""
+    if conversation_id.startswith("knowledge:"):
+        return conversation_id
+    return f"conversation:{conversation_id}"
+
+
 def _find_duplicate_vector_memory(user_id: str, text: str) -> dict[str, object] | None:
     if (
         not settings.memory_vector_dedupe_enabled
@@ -424,6 +451,7 @@ def upsert_structured_memory(
     conflict_action = _decide_structured_memory_conflict(existing, value, confidence, status)
     if existing and value != original_value and conflict_action == "replaced":
         conflict_action = "merged"
+    confidence = _adjust_structured_confidence(existing, confidence, status, conflict_action)
     if conflict_action == "ignored":
         _record_structured_memory_history(
             user_id,
@@ -530,6 +558,7 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
     status = _normalise_memory_status(status)
     now = time()
     existing = _get_structured_memory(user_id, key)
+    confidence = _status_adjusted_confidence(existing, status)
     if settings.postgres_enabled:
         _ensure_postgres_schema()
         with postgres_connection() as conn:
@@ -537,12 +566,12 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
                 cur.execute(
                     """
                     UPDATE structured_memory
-                    SET status = %s, updated_at = to_timestamp(%s)
+                    SET status = %s, confidence = %s, updated_at = to_timestamp(%s)
                     WHERE user_id = %s AND memory_key = %s
                     RETURNING memory_key, memory_value, source, extract(epoch from updated_at), status, confidence,
                               extract(epoch from expires_at)
                     """,
-                    (status, now, user_id, key),
+                    (status, confidence, now, user_id, key),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -566,6 +595,7 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
         if not item:
             return {}
         item.status = status
+        item.confidence = confidence
         item.updated_at = now
         _record_structured_memory_history(user_id, key, item.value, item.value, f"status:{status}", item.source, item.confidence, status)
         logger.info("Structured memory status changed. user_id=%s key=%s status=%s", user_id, key, status)
@@ -659,12 +689,32 @@ def get_structured_memory_history(user_id: str, key: str, limit: int = 30) -> li
 
 def get_structured_memory_merge_suggestions(user_id: str) -> list[dict[str, object]]:
     items = _load_all_structured(user_id)
+    suggestions: list[dict[str, object]] = []
+    seen_groups: set[str] = set()
+
+    exact_grouped: dict[tuple[str, str], list[StructuredMemory]] = defaultdict(list)
+    for item in items:
+        if item.status == "disabled":
+            continue
+        exact_grouped[(_structured_target_key(item.key), item.value)].append(item)
+
+    for (target_key, value), group_items in exact_grouped.items():
+        if len(group_items) < 2:
+            continue
+        group = f"duplicate:{target_key}:{value}"
+        seen_groups.add(group)
+        suggestions.append({
+            "group": group,
+            "reason": "存在重复的同值记忆，建议只保留一条，其余禁用或永久删除。",
+            "items": [asdict(item) for item in sorted(group_items, key=lambda item: item.updated_at, reverse=True)],
+        })
+
     grouped: dict[str, list[StructuredMemory]] = defaultdict(list)
     for item in items:
-        prefix = item.key.split(".", 1)[0].split("_", 1)[0].lower()
-        grouped[prefix].append(item)
+        if item.status == "disabled":
+            continue
+        grouped[_structured_group_key(_structured_target_key(item.key))].append(item)
 
-    suggestions: list[dict[str, object]] = []
     for group_key, group_items in grouped.items():
         active_items = [item for item in group_items if item.status == "active"]
         if len(group_items) < 2:
@@ -672,12 +722,33 @@ def get_structured_memory_merge_suggestions(user_id: str) -> list[dict[str, obje
         values = {item.value for item in group_items}
         if len(values) <= 1 and len(active_items) <= 1:
             continue
+        group = f"conflict:{group_key}"
+        if group in seen_groups:
+            continue
         suggestions.append({
-            "group": group_key,
+            "group": group,
             "reason": "同类 key 存在多个值，建议人工确认是否合并或禁用旧版本。",
             "items": [asdict(item) for item in sorted(group_items, key=lambda item: item.updated_at, reverse=True)],
         })
     return suggestions
+
+
+def _structured_target_key(key: str) -> str:
+    if key.startswith("pending:"):
+        return ":".join(key.split(":")[2:]) or key
+    return key
+
+
+def _structured_group_key(key: str) -> str:
+    if key == "negative_preference":
+        return "preference"
+    if key.endswith("_negative_preference"):
+        return key.removesuffix("_negative_preference")
+    if key == "preference":
+        return "preference"
+    if key.endswith("_preference"):
+        return key.removesuffix("_preference")
+    return key.split(".", 1)[0].lower()
 
 
 def _load_short_term(user_id: str, conversation_id: str | None) -> list[MemoryTurn]:
@@ -898,6 +969,40 @@ def _decide_structured_memory_conflict(
     if new_confidence + settings.structured_memory_conflict_confidence_margin < existing.confidence:
         return "ignored"
     return "replaced"
+
+
+def _adjust_structured_confidence(
+    existing: StructuredMemory | None,
+    confidence: float,
+    status: str,
+    action: str,
+) -> float:
+    base = _clamp_confidence(confidence)
+    if not existing:
+        return base
+    if status == "active" and action == "refreshed":
+        return _clamp_confidence(max(existing.confidence, base) + 0.05)
+    if status == "active" and action == "reactivated":
+        return _clamp_confidence(max(existing.confidence, base) + 0.03)
+    if status == "active" and action in {"replaced", "merged"}:
+        return _clamp_confidence(max(base, 0.7))
+    return base
+
+
+def _status_adjusted_confidence(existing: StructuredMemory | None, status: str) -> float:
+    if not existing:
+        return 1.0
+    if status == "active":
+        return _clamp_confidence(existing.confidence + 0.03)
+    if status == "disabled":
+        return _clamp_confidence(existing.confidence - 0.15)
+    if status == "expired":
+        return _clamp_confidence(min(existing.confidence, 0.5))
+    return _clamp_confidence(existing.confidence)
+
+
+def _clamp_confidence(value: float) -> float:
+    return round(min(1.0, max(0.0, float(value))), 4)
 
 
 _MULTI_VALUE_STRUCTURED_KEYS = {
@@ -1233,11 +1338,30 @@ def _mark_vector_backend_failure(name: str, exception: Exception) -> None:
     cooldown = max(settings.vector_backend_failure_cooldown_seconds, 0)
     if cooldown <= 0:
         return
+    was_available = _vector_backend_available(name)
     _vector_backend_disabled_until[name] = time() + cooldown
+    if was_available:
+        logger.warning(
+            "Vector backend temporarily disabled. backend=%s cooldown_seconds=%s error=%s",
+            name,
+            cooldown,
+            exception,
+        )
+
+
+def _log_vector_backend_failure(
+    name: str,
+    action: str,
+    user_id: str,
+    exception: Exception,
+    conversation_id: str | None = None,
+) -> None:
     logger.warning(
-        "Vector backend temporarily disabled. backend=%s cooldown_seconds=%s error=%s",
+        "Vector backend %s failed. backend=%s user_id=%s conversation_id=%s error=%s",
+        action,
         name,
-        cooldown,
+        user_id,
+        conversation_id or "",
         exception,
     )
 
@@ -1318,6 +1442,7 @@ def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, fl
         (r"我喜欢([^，。,.!\n]{1,64})", "preference"),
         (r"我更喜欢([^，。,.!\n]{1,64})", "preference"),
         (r"相比于[^，。,.!\n]{1,64}我[更跟]?喜欢([^，。,.!\n]{1,64})", "preference"),
+        (r"我(?:不喜欢|讨厌|不爱|不想要)([^，。,.!\n]{1,64})", "negative_preference"),
         (r"我想(?:要)?去([^，。,.!\n]{1,32})(?:旅行|旅游|玩|看看|逛逛)?", "travel_interest"),
     ]
     patterns.extend([
@@ -1334,6 +1459,9 @@ def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, fl
             elif fixed_key == "preference":
                 value = match.group(1).strip()
                 candidates.append((_preference_key_for_value(value), value, 0.85))
+            elif fixed_key == "negative_preference":
+                value = match.group(1).strip()
+                candidates.append((_negative_preference_key_for_value(value), value, 0.9))
             else:
                 candidates.append((fixed_key, match.group(1).strip(), 0.85))
     return [
@@ -1399,9 +1527,18 @@ def _normalise_structured_candidate(key: str, value: str) -> tuple[str, str] | N
             return None
     if normalised_key == "preference":
         normalised_key = _preference_key_for_value(normalised_value)
+    if normalised_key in {"negative_preference", "dislike", "不喜欢", "厌恶"}:
+        normalised_key = _negative_preference_key_for_value(normalised_value)
     if normalised_key == "zodiac":
         return normalised_key, _normalise_zodiac_value(normalised_value)
     return normalised_key, normalised_value
+
+
+def _negative_preference_key_for_value(value: str) -> str:
+    preference_key = _preference_key_for_value(value)
+    if preference_key.endswith("_preference") and preference_key != "preference":
+        return preference_key.replace("_preference", "_negative_preference")
+    return "negative_preference"
 
 
 def _preference_key_for_value(value: str) -> str:
@@ -1453,6 +1590,9 @@ def _normalise_structured_key(key: str) -> str:
         "目标": "goal",
         "偏好": "preference",
         "喜好": "preference",
+        "负向偏好": "negative_preference",
+        "不喜欢": "negative_preference",
+        "讨厌": "negative_preference",
         "食物偏好": "food_preference",
         "水果偏好": "food_preference",
         "宠物偏好": "pet_preference",
@@ -1460,6 +1600,46 @@ def _normalise_structured_key(key: str) -> str:
         "运动偏好": "sport_preference",
         "娱乐偏好": "entertainment_preference",
     }.get(cleaned, cleaned)
+
+
+def _find_pending_structured_memory(user_id: str, target_key: str, value: str) -> StructuredMemory | None:
+    pending_suffix = f":{target_key}"
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        try:
+            with postgres_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT memory_key, memory_value, source, extract(epoch from updated_at), status, confidence,
+                               extract(epoch from expires_at)
+                        FROM structured_memory
+                        WHERE user_id = %s
+                          AND status = 'pending'
+                          AND memory_key LIKE 'pending:%%'
+                          AND memory_key LIKE %s
+                          AND memory_value = %s
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                        """,
+                        (user_id, f"%{pending_suffix}", value),
+                    )
+                    row = cur.fetchone()
+                    return _structured_memory_from_row(row) if row else None
+        except Exception:
+            logger.exception("Find pending structured memory failed. user_id=%s target_key=%s", user_id, target_key)
+            return None
+
+    with _lock:
+        for item in sorted(_structured.get(user_id, {}).values(), key=lambda memory: memory.updated_at, reverse=True):
+            if (
+                item.status == "pending"
+                and item.key.startswith("pending:")
+                and item.key.endswith(pending_suffix)
+                and item.value == value
+            ):
+                return item
+    return None
 
 
 def _structured_memory_from_row(row: tuple) -> StructuredMemory:

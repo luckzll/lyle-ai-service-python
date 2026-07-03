@@ -1,8 +1,12 @@
 import re
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import postgres_connection
+from app.tools.operation_confirmation import create_pending_operation
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def extract_candidate_tasks(question: str) -> list[dict[str, object]]:
@@ -65,33 +69,91 @@ def create_todo_from_question(user_id: str, conversation_id: str | None, questio
     return create_todo(user_id, conversation_id, title, _extract_datetime(question))
 
 
-def create_calendar_event_from_question(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
+def preview_todo_from_question(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
+    title = _cleanup_title(question, ["帮我创建待办", "创建待办", "加个待办", "待办", "todo"])
+    due_at = _extract_datetime(question)
+    title = title.strip()[:200]
+    if not title:
+        return {"ok": False, "content": "没有识别到待办内容。"}
+    due_text = due_at.isoformat() if due_at else None
+    summary = f"创建待办「{title}」" + (f"，截止时间 {due_text}" if due_text else "，不设置截止时间")
+    return create_pending_operation(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        tool_name="todo",
+        operation_type="todo.create",
+        risk_level="write",
+        summary=summary,
+        payload={"title": title, "dueAt": due_text},
+        source_text=question,
+    )
+
+
+def create_calendar_event(
+    user_id: str,
+    conversation_id: str | None,
+    title: str,
+    starts_at: datetime | None = None,
+) -> dict[str, object]:
     if not settings.postgres_enabled:
         return {"ok": False, "content": "PostgreSQL 未启用，无法创建日历事件。"}
 
-    title = _cleanup_title(question, ["帮我创建日历", "创建日历", "加个日程", "日程", "日历", "calendar"])
+    title = title.strip()[:200]
     if not title:
         return {"ok": False, "content": "没有识别到日历事件内容。"}
 
-    starts_at = _extract_datetime(question)
+    now = datetime.now(UTC)
     with postgres_connection() as conn:
         row = conn.execute(
             """
             INSERT INTO agent_calendar_event
               (user_id, conversation_id, title, starts_at, status, created_at, updated_at)
             VALUES (%s, %s, %s, %s, 'scheduled', %s, %s)
-            RETURNING id
+            RETURNING id, created_at, updated_at
             """,
-            (user_id, conversation_id or "", title, starts_at, datetime.now(UTC), datetime.now(UTC)),
+            (user_id, conversation_id or "", title, starts_at, now, now),
         ).fetchone()
         conn.commit()
 
-    time_text = starts_at.isoformat() if starts_at else "未设置具体时间"
+    time_text = starts_at.isoformat() if starts_at else None
     return {
         "ok": True,
-        "content": f"已创建日历事件：{title}，时间：{time_text}",
-        "event": {"id": row[0], "title": title, "startsAt": time_text, "status": "scheduled"},
+        "content": f"已创建日历事件：{title}，时间：{time_text or '未设置具体时间'}",
+        "event": {
+            "id": row[0],
+            "title": title,
+            "startsAt": time_text,
+            "status": "scheduled",
+            "conversationId": conversation_id or "",
+            "createdAt": row[1].isoformat(),
+            "updatedAt": row[2].isoformat(),
+        },
     }
+
+
+def create_calendar_event_from_question(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
+    title = _cleanup_title(question, ["帮我创建日历", "创建日历", "加个日程", "日程", "日历", "calendar"])
+    return create_calendar_event(user_id, conversation_id, title, _extract_datetime(question))
+
+
+def preview_calendar_event_from_question(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
+    title = _cleanup_title(question, ["帮我创建日历", "创建日历", "加个日程", "日程", "日历", "calendar"])
+    starts_at = _extract_datetime(question)
+    title = title.strip()[:200]
+    if not title:
+        return {"ok": False, "content": "没有识别到日历事件内容。"}
+    starts_text = starts_at.isoformat() if starts_at else None
+    summary = f"创建日程「{title}」" + (f"，开始时间 {starts_text}" if starts_text else "，不设置开始时间")
+    return create_pending_operation(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        tool_name="calendar",
+        operation_type="calendar.create",
+        risk_level="write",
+        summary=summary,
+        payload={"title": title, "startsAt": starts_text},
+        source_text=question,
+    )
 
 
 def _cleanup_title(question: str, prefixes: list[str]) -> str:
@@ -99,7 +161,7 @@ def _cleanup_title(question: str, prefixes: list[str]) -> str:
     for prefix in prefixes:
         title = title.replace(prefix, "")
     title = re.sub(r"^(：|:|，|,|\s)+", "", title).strip()
-    return title[:200]
+    return _strip_leading_datetime_phrase(title)[:200]
 
 
 def _extract_candidate_todo_title(question: str) -> str:
@@ -127,17 +189,19 @@ def _extract_iso_datetime(question: str) -> datetime | None:
         return None
     date_part = match.group(1)
     time_part = match.group(2) or "09:00"
-    return datetime.fromisoformat(f"{date_part}T{time_part}:00").replace(tzinfo=UTC)
+    local_time = datetime.fromisoformat(f"{date_part}T{time_part}:00").replace(tzinfo=LOCAL_TIMEZONE)
+    return local_time.astimezone(UTC)
 
 
 def _extract_cn_datetime(question: str, now: datetime | None = None) -> datetime | None:
-    now = now or datetime.now(UTC)
-    base_date = _extract_cn_date(question, now)
+    now = now or datetime.now(LOCAL_TIMEZONE)
+    local_now = now.astimezone(LOCAL_TIMEZONE) if now.tzinfo else now.replace(tzinfo=LOCAL_TIMEZONE)
+    base_date = _extract_cn_date(question, local_now)
     if base_date is None:
         return None
 
     hour, minute = _extract_cn_time(question)
-    return base_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return base_date.replace(hour=hour, minute=minute, second=0, microsecond=0).astimezone(UTC)
 
 
 def _extract_cn_date(question: str, now: datetime) -> datetime | None:
@@ -198,6 +262,19 @@ def _extract_cn_time(question: str) -> tuple[int, int]:
     if any(word in question for word in ["下午", "晚上"]) and 1 <= hour <= 11:
         hour += 12
     return hour, minute
+
+
+def _strip_leading_datetime_phrase(title: str) -> str:
+    cleaned = re.sub(
+        r"^(?:"
+        r"(?:今天|明天|后天|今晚|明早|本周|这周|下周[一二三四五六日天]?|周[一二三四五六日天]?)"
+        r")?(?:早上|上午|中午|下午|晚上)?"
+        r"(?:(?:[零一二两三四五六七八九十\d]{1,3})点(?:半)?|\d{1,2}[:：]\d{2})?"
+        r"(?:前|之前)?",
+        "",
+        title,
+    ).strip(" ：:，,。.")
+    return cleaned or title
 
 
 def _cn_number_to_int(value: str) -> int:

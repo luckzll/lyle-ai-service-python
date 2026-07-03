@@ -27,3 +27,21 @@ def test_temporary_ai_config_accepts_empty_config():
     with temporary_ai_config({}):
         assert settings.prompt_version == old_prompt_version
     assert settings.prompt_version == old_prompt_version
+
+
+def test_temporary_ai_config_ignores_security_sensitive_keys():
+    old_allowed_names = settings.tool_allowed_names
+    old_agent_enabled = settings.tool_agent_enabled
+    old_web_search_enabled = settings.tool_web_search_enabled
+    old_internal_token = settings.internal_api_token
+
+    with temporary_ai_config({
+        "TOOL_ALLOWED_NAMES": "health_check,evil_tool",
+        "TOOL_AGENT_ENABLED": "true",
+        "TOOL_WEB_SEARCH_ENABLED": "true",
+        "INTERNAL_API_TOKEN": "attacker-token",
+    }):
+        assert settings.tool_allowed_names == old_allowed_names
+        assert settings.tool_agent_enabled == old_agent_enabled
+        assert settings.tool_web_search_enabled == old_web_search_enabled
+        assert settings.internal_api_token == old_internal_token

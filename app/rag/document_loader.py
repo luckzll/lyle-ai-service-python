@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import unquote, urlparse
@@ -16,9 +17,22 @@ XLSX_SUFFIXES = {".xlsx", ".xlsm"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
 
-def load_document_text(storage_path: str) -> tuple[str, str]:
-    path = _resolve_storage_path(storage_path)
-    title = path.name
+@dataclass(frozen=True)
+class StorageObjectRef:
+    storage_path: str
+    storage_provider: str | None = None
+    bucket: str | None = None
+    object_key: str | None = None
+    original_name: str | None = None
+    content_type: str | None = None
+    file_size: int | None = None
+    visibility: str | None = None
+
+
+def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
+    ref = storage_path if isinstance(storage_path, StorageObjectRef) else StorageObjectRef(storage_path=storage_path)
+    path = _resolve_storage_path(ref)
+    title = ref.original_name or path.name
 
     suffix = path.suffix.lower()
     if suffix in TEXT_SUFFIXES:
@@ -65,13 +79,22 @@ def split_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str
     return chunks
 
 
-def _resolve_storage_path(storage_path: str) -> Path:
-    parsed = urlparse(storage_path)
+def _resolve_storage_path(ref: StorageObjectRef) -> Path:
+    provider = (ref.storage_provider or "").upper()
+    if provider == "LOCAL" and ref.storage_path:
+        parsed = urlparse(ref.storage_path)
+        return Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(ref.storage_path)
+    if provider in {"MINIO", "S3"} and ref.bucket and ref.object_key:
+        return _download_minio_object(ref.bucket, ref.object_key)
+    if provider == "TOS":
+        raise ValueError("知识库文件收到 TOS 对象引用，但当前 Python 解析器尚未配置 TOS 私有下载。")
+
+    parsed = urlparse(ref.storage_path)
     if parsed.scheme == "file":
         return Path(unquote(parsed.path))
     if parsed.scheme == "s3":
         return _download_minio_object(parsed.netloc, parsed.path.lstrip("/"))
-    return Path(storage_path)
+    return Path(ref.storage_path)
 
 
 def _download_minio_object(bucket: str, object_name: str) -> Path:

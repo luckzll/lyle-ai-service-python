@@ -20,7 +20,7 @@ from app.core.database import close_postgres_pool
 from app.core.logging_config import configure_logging
 from app.core.metrics import metrics_middleware
 from app.core.rate_limit import rate_limit_middleware
-from app.core.security import internal_token_middleware
+from app.core.security import internal_token_is_insecure, internal_token_middleware
 from app.workers.notification_worker import run_notification_worker
 
 configure_logging()
@@ -39,6 +39,11 @@ async def lifespan(app: FastAPI):
         settings.tool_image_generate_enabled,
         settings.tool_image_edit_enabled,
     )
+    if internal_token_is_insecure():
+        logger.error(
+            "INTERNAL_API_TOKEN 未配置为安全值（为空或占位值），所有 /ai/* 请求将返回 503。"
+            "请在 .env 中设置强随机 token。"
+        )
     stop_event = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
     if settings.notification_worker_enabled:

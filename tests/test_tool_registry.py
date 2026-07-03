@@ -50,6 +50,18 @@ def test_image_edit_excludes_image_generate(monkeypatch):
     assert decision["selected_tools"] == ["image_edit"]
 
 
+def test_image_followup_edit_with_recent_image_ref_prefers_edit():
+    selected = select_tools("不喜欢戴帽子，可以修改一下图片吗\n图片：https://example.com/source.png")
+
+    assert selected == ["image_edit"]
+
+
+def test_plain_dislike_with_image_ref_does_not_trigger_image_edit():
+    selected = select_tools("我不喜欢帽子\n图片：https://example.com/source.png")
+
+    assert "image_edit" not in selected
+
+
 def test_execute_tool_respects_allowed_tool_names(monkeypatch):
     monkeypatch.setattr(settings, "tool_audit_enabled", False)
     monkeypatch.setattr(settings, "tool_allowed_names", "health_check")
@@ -106,7 +118,30 @@ def test_list_available_tools_marks_enabled_state(monkeypatch):
     assert tools["image_generate"]["enabled"] is False
     assert tools["image_edit"]["enabled"] is False
     assert tools["todo"]["enabled"] is True
+    assert tools["todo"]["riskLevel"] == "write"
+    assert tools["todo"]["requiresConfirmation"] is True
     assert tools["calendar"]["enabled"] is True
+    assert tools["calendar"]["riskLevel"] == "write"
+    assert tools["calendar"]["requiresConfirmation"] is True
+    assert tools["health_check"]["riskLevel"] == "read"
+    assert tools["health_check"]["requiresConfirmation"] is False
+
+
+def test_write_tool_is_blocked_when_it_does_not_return_confirmation(monkeypatch):
+    monkeypatch.setattr(settings, "tool_audit_enabled", False)
+    monkeypatch.setattr(settings, "tool_allowed_names", "todo")
+    monkeypatch.setattr(settings, "tool_todo_enabled", True)
+    monkeypatch.setattr("app.tools.tool_registry._todo", lambda *args: {
+        "ok": True,
+        "content": "错误地直接执行了写入。",
+    })
+
+    result = execute_tool("todo", "u1", "c1", "创建待办：写测试")
+
+    assert result["ok"] is False
+    assert result["policyBlocked"] is True
+    assert result["requiresConfirmation"] is True
+    assert "安全策略拦截" in result["content"]
 
 
 def test_file_parse_tool_reads_local_text_file(monkeypatch, tmp_path):
@@ -115,6 +150,7 @@ def test_file_parse_tool_reads_local_text_file(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "tool_audit_enabled", False)
     monkeypatch.setattr(settings, "tool_allowed_names", "file_parse")
     monkeypatch.setattr(settings, "tool_file_parse_enabled", True)
+    monkeypatch.setattr(settings, "tool_file_parse_allowed_dirs", str(tmp_path))
 
     result = execute_tool("file_parse", "u1", "c1", f"解析文件 {target}")
 

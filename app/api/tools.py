@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from app.core.config import settings
 from app.core.database import postgres_connection
 from app.tools.notification_service import list_notifications, mark_notification_read
+from app.tools.operation_confirmation import confirm_pending_operation, list_pending_operations, reject_pending_operation
 from app.tools.task_tool import create_todo
 from app.tools.tool_registry import list_available_tools
 
@@ -63,6 +64,30 @@ def tool_audit(limit: int = Query(default=50, ge=1, le=200)) -> dict[str, object
             for row in rows
         ]
     }
+
+
+@router.get("/tools/operations/{user_id}")
+def pending_operations(user_id: str, limit: int = Query(default=50, ge=1, le=200)) -> dict[str, object]:
+    _require_postgres()
+    return list_pending_operations(user_id, limit)
+
+
+@router.post("/tools/operations/{user_id}/{operation_id}/confirm")
+def confirm_operation(user_id: str, operation_id: int) -> dict[str, object]:
+    _require_postgres()
+    try:
+        return confirm_pending_operation(user_id, operation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/tools/operations/{user_id}/{operation_id}/reject")
+def reject_operation(user_id: str, operation_id: int) -> dict[str, object]:
+    _require_postgres()
+    try:
+        return reject_pending_operation(user_id, operation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/tools/todos/{user_id}")

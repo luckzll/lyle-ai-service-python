@@ -92,7 +92,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         agentTrace=agent_trace,
         toolResults=tool_results,
         candidateMemories=[],
-        candidateTasks=extract_candidate_tasks(request.message),
+        candidateTasks=_candidate_tasks_for_response(request.message, tool_results),
         review=result.get("review") or {},
     )
 
@@ -270,7 +270,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "agentTrace": agent_trace,
                     "toolResults": state.get("tool_results") or [],
                     "candidateMemories": [],
-                    "candidateTasks": extract_candidate_tasks(request.message),
+                    "candidateTasks": _candidate_tasks_for_response(request.message, state.get("tool_results") or []),
                     "review": review,
                 }
                 meta_started = perf_counter()
@@ -283,9 +283,16 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     perf_counter() - meta_started,
                     perf_counter() - request_started,
                 )
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            logger.info(
+                "Streaming chat cancelled by client. user_id=%s conversation_id=%s",
+                request.user_id,
+                request.conversation_id,
+            )
+            raise
         except Exception as exc:
             logger.exception("Streaming chat failed. user_id=%s conversation_id=%s", request.user_id, request.conversation_id)
-            yield _sse("error", {"message": f"DeepSeek API 调用失败：{exc}"})
+            yield _sse("error", {"message": _friendly_stream_error(exc)})
 
     def write_memory_after_stream() -> None:
         answer = final_answer_holder.get("answer")
@@ -308,6 +315,30 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 def _sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _friendly_stream_error(exc: Exception) -> str:
+    text = str(exc)
+    lowered = text.lower()
+    if "timeout" in lowered or "timed out" in lowered:
+        return "模型响应超时了，请稍后重试，或换一个更短的问题。"
+    if "api key" in lowered or "unauthorized" in lowered or "401" in lowered:
+        return "模型服务鉴权失败，请检查后端模型 API Key 配置。"
+    if "rate" in lowered or "429" in lowered:
+        return "模型服务当前限流了，请稍后再试。"
+    return "模型服务暂时不可用，请稍后重试。"
+
+
+def _candidate_tasks_for_response(question: str, tool_results: list[dict[str, object]]) -> list[dict[str, object]]:
+    has_pending_task_operation = any(
+        item.get("requiresConfirmation")
+        and isinstance(item.get("operation"), dict)
+        and str(item["operation"].get("operationType") or "").startswith("todo.")
+        for item in tool_results
+    )
+    if has_pending_task_operation:
+        return []
+    return extract_candidate_tasks(question)
 
 
 def _writer_input_debug(

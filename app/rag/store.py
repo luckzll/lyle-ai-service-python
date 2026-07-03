@@ -2,13 +2,14 @@ from dataclasses import dataclass
 import logging
 from threading import Lock
 from time import time
+from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid5
 
 import httpx
 
 from app.core.config import settings
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
-from app.rag.document_loader import load_document_text, split_text
+from app.rag.document_loader import StorageObjectRef, load_document_text, split_text
 from app.rag.reranker import rerank_items
 
 
@@ -23,13 +24,20 @@ class KnowledgeChunk:
 _lock = Lock()
 _chunks: list[KnowledgeChunk] = []
 _tasks: dict[str, dict[str, str]] = {}
+_storage_object_owners: dict[tuple[str, str], str] = {}
 _qdrant_disabled_until = 0.0
 logger = logging.getLogger(__name__)
 
 
-def add_document(file_id: str, knowledge_base_id: str, storage_path: str, user_id: str | None = None) -> dict[str, object]:
+def add_document(
+    file_id: str,
+    knowledge_base_id: str,
+    storage_path: str,
+    user_id: str | None = None,
+    storage_ref: StorageObjectRef | None = None,
+) -> dict[str, object]:
     task_id = f"ingest-{file_id}"
-    title, text = load_document_text(storage_path)
+    title, text = load_document_text(storage_ref or storage_path)
     chunks = split_text(text)
     logger.info("Document ingest started. file_id=%s knowledge_base_id=%s chunks=%s", file_id, knowledge_base_id, len(chunks))
 
@@ -50,7 +58,7 @@ def add_document(file_id: str, knowledge_base_id: str, storage_path: str, user_i
                 _qdrant_upsert(item, index)
             except Exception as exception:
                 _mark_qdrant_failure(exception)
-                logger.exception("Qdrant knowledge upsert failed. doc_id=%s knowledge_base_id=%s", file_id, knowledge_base_id)
+                _log_qdrant_failure("upsert", exception, knowledge_base_id, file_id)
         _tasks[task_id] = {
             "task_id": task_id,
             "file_id": file_id,
@@ -58,6 +66,8 @@ def add_document(file_id: str, knowledge_base_id: str, storage_path: str, user_i
             "status": "completed",
             "message": f"Document ingest completed. chunks={len(chunks)}",
         }
+        if user_id and storage_ref:
+            _remember_storage_owner(user_id, storage_ref)
 
     candidate_memories = _extract_document_candidate_memories(user_id, knowledge_base_id, title, text)
     return {
@@ -70,6 +80,25 @@ def get_task(task_id: str) -> dict[str, str] | None:
     with _lock:
         task = _tasks.get(task_id)
         return dict(task) if task else None
+
+
+def storage_object_belongs_to_user(user_id: str, storage_path: str) -> bool:
+    parsed = urlparse(storage_path)
+    if parsed.scheme != "s3":
+        return False
+    bucket = parsed.netloc
+    object_key = parsed.path.lstrip("/")
+    if not bucket or not object_key:
+        return False
+    with _lock:
+        return _storage_object_owners.get((bucket, object_key)) == user_id
+
+
+def remember_storage_object_owner(user_id: str, bucket: str, object_key: str) -> None:
+    if not user_id or not bucket or not object_key:
+        return
+    with _lock:
+        _storage_object_owners[(bucket, object_key)] = user_id
 
 
 def list_chunks(knowledge_base_id: str | None = None, limit: int = 50) -> list[dict[str, str]]:
@@ -88,6 +117,17 @@ def list_chunks(knowledge_base_id: str | None = None, limit: int = 50) -> list[d
         }
         for item in items
     ]
+
+
+def _remember_storage_owner(user_id: str, ref: StorageObjectRef) -> None:
+    provider = (ref.storage_provider or "").upper()
+    if provider in {"MINIO", "S3"} and ref.bucket and ref.object_key:
+        _storage_object_owners[(ref.bucket, ref.object_key)] = user_id
+        return
+
+    parsed = urlparse(ref.storage_path)
+    if parsed.scheme == "s3" and parsed.netloc and parsed.path:
+        _storage_object_owners[(parsed.netloc, parsed.path.lstrip("/"))] = user_id
 
 
 def search(question: str, knowledge_base_ids: list[str], top_k: int = 5) -> list[dict[str, str]]:
@@ -185,7 +225,7 @@ def _qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int) -> 
         _ensure_qdrant_collection()
     except Exception as exception:
         _mark_qdrant_failure(exception)
-        logger.exception("Qdrant knowledge search prepare failed. knowledge_base_ids=%s", knowledge_base_ids)
+        _log_qdrant_failure("search_prepare", exception, ",".join(knowledge_base_ids))
         return []
     body = {
         "vector": embed_text(question),
@@ -210,7 +250,7 @@ def _qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int) -> 
             points = response.json().get("result") or []
     except Exception as exception:
         _mark_qdrant_failure(exception)
-        logger.exception("Qdrant knowledge search failed. knowledge_base_ids=%s", knowledge_base_ids)
+        _log_qdrant_failure("search", exception, ",".join(knowledge_base_ids))
         return []
 
     results = []
@@ -272,9 +312,21 @@ def _mark_qdrant_failure(exception: Exception) -> None:
     cooldown = max(settings.vector_backend_failure_cooldown_seconds, 0)
     if cooldown <= 0:
         return
+    was_available = _qdrant_available()
     _qdrant_disabled_until = time() + cooldown
+    if was_available:
+        logger.warning(
+            "Qdrant knowledge backend temporarily disabled. cooldown_seconds=%s error=%s",
+            cooldown,
+            exception,
+        )
+
+
+def _log_qdrant_failure(action: str, exception: Exception, knowledge_base_id: str = "", doc_id: str = "") -> None:
     logger.warning(
-        "Qdrant knowledge backend temporarily disabled. cooldown_seconds=%s error=%s",
-        cooldown,
+        "Qdrant knowledge %s failed. knowledge_base_id=%s doc_id=%s error=%s",
+        action,
+        knowledge_base_id,
+        doc_id,
         exception,
     )

@@ -7,9 +7,10 @@ from app.core.config import settings
 from app.core.database import postgres_connection
 from app.memory.store import export_memory
 from app.rag.reranker import get_reranker_status
+from app.tools.risk_policy import ToolRiskPolicy, get_tool_risk_policy
 from app.tools.file_parse_tool import parse_file_from_question
 from app.tools.image_tool import analyze_image_from_question, edit_image_from_question, generate_image_from_question
-from app.tools.task_tool import create_calendar_event_from_question, create_todo_from_question
+from app.tools.task_tool import preview_calendar_event_from_question, preview_todo_from_question
 from app.tools.tool_audit import audit_tool_call
 from app.tools.weather_tool import get_weather_from_question
 from app.tools.web_search_tool import search_web
@@ -20,6 +21,7 @@ class ToolSpec:
     name: str
     description: str
     handler: Callable[[str, str | None, str], dict[str, object]]
+    risk_policy: ToolRiskPolicy
 
 
 def list_available_tools() -> list[dict[str, object]]:
@@ -29,6 +31,9 @@ def list_available_tools() -> list[dict[str, object]]:
             "name": spec.name,
             "description": spec.description,
             "enabled": spec.name in allowed and _tool_switch_enabled(spec.name),
+            "riskLevel": spec.risk_policy.risk_level,
+            "requiresConfirmation": spec.risk_policy.requires_confirmation,
+            "riskDescription": spec.risk_policy.description,
         }
         for spec in _tool_specs().values()
     ]
@@ -73,6 +78,10 @@ def select_tools(question: str) -> list[str]:
         selected.append("file_parse")
     image_edit_keywords = [
         "改图",
+        "修改一下",
+        "改一下",
+        "可以修改",
+        "能不能修改",
         "修改图片",
         "编辑图片",
         "图生图",
@@ -221,6 +230,12 @@ def format_tool_context(tool_results: list[dict[str, object]]) -> str:
             content = "图片已成功修改，最终图片会由系统自动附加到回答末尾。回答中不要输出图片 URL 或 Markdown。"
         if item.get("tool") == "image_analyze" and item.get("ok"):
             content = f"图片识别结果：{content}\n回答时直接根据识别结果回应用户，不要解释图片输入格式或工具限制。"
+        if item.get("requiresConfirmation"):
+            operation = item.get("operation") if isinstance(item.get("operation"), dict) else {}
+            content = (
+                f"已生成待用户确认的操作预览：{operation.get('summary') or content}。"
+                "回答时说明需要用户点击确认后才会执行，不要说已经完成。"
+            )
         lines.append(f"- {item.get('tool')}({status})：{content}")
     return (
         "已完成的工具调用结果如下。回答时必须优先使用这些结果；"
@@ -256,6 +271,19 @@ def _execute_tool(
             "content": f"工具未启用：{tool_name}",
         }
     result = spec.handler(user_id, conversation_id, question)
+    if (
+        spec.risk_policy.requires_confirmation
+        and result.get("ok")
+        and not result.get("requiresConfirmation")
+    ):
+        return {
+            "tool": tool_name,
+            "ok": False,
+            "content": "写操作被安全策略拦截：该工具必须先生成待确认操作，不能直接执行。",
+            "policyBlocked": True,
+            "riskLevel": spec.risk_policy.risk_level,
+            "requiresConfirmation": True,
+        }
     return {"tool": tool_name, **result}
 
 
@@ -265,61 +293,73 @@ def _tool_specs() -> dict[str, ToolSpec]:
             name="health_check",
             description="检查 Python AI 服务内部工具系统、Reranker 状态。",
             handler=_health_check,
+            risk_policy=get_tool_risk_policy("health_check"),
         ),
         "memory_snapshot": ToolSpec(
             name="memory_snapshot",
             description="查看当前用户的记忆快照，包括短期、长期摘要、结构化和向量召回记忆。",
             handler=_memory_snapshot,
+            risk_policy=get_tool_risk_policy("memory_snapshot"),
         ),
         "memory_stats": ToolSpec(
             name="memory_stats",
             description="只读查询 PostgreSQL 记忆表统计，不执行用户传入 SQL。",
             handler=_memory_stats,
+            risk_policy=get_tool_risk_policy("memory_stats"),
         ),
         "web_search": ToolSpec(
             name="web_search",
             description="网页搜索工具入口，需配置搜索 provider 后启用。",
             handler=_web_search,
+            risk_policy=get_tool_risk_policy("web_search"),
         ),
         "weather": ToolSpec(
             name="weather",
             description="按需查询指定城市当前天气和短期预报。",
             handler=_weather,
+            risk_policy=get_tool_risk_policy("weather"),
         ),
         "file_parse": ToolSpec(
             name="file_parse",
             description="临时解析 file://、s3:// 或本地绝对路径文件。",
             handler=_file_parse,
+            risk_policy=get_tool_risk_policy("file_parse"),
         ),
         "image_analyze": ToolSpec(
             name="image_analyze",
             description="识别/分析用户上传的图片内容。",
             handler=_image_analyze,
+            risk_policy=get_tool_risk_policy("image_analyze"),
         ),
         "image_generate": ToolSpec(
             name="image_generate",
             description="根据文本提示词生成图片。",
             handler=_image_generate,
+            risk_policy=get_tool_risk_policy("image_generate"),
         ),
         "image_edit": ToolSpec(
             name="image_edit",
             description="根据用户上传的图片和编辑指令生成修改后的图片。",
             handler=_image_edit,
+            risk_policy=get_tool_risk_policy("image_edit"),
         ),
         "todo": ToolSpec(
             name="todo",
-            description="创建用户待办，写入 PostgreSQL。",
+            description="生成创建待办的操作预览，用户确认后才写入 PostgreSQL。",
             handler=_todo,
+            risk_policy=get_tool_risk_policy("todo"),
         ),
         "calendar": ToolSpec(
             name="calendar",
-            description="创建用户日历事件，写入 PostgreSQL。",
+            description="生成创建日程的操作预览，用户确认后才写入 PostgreSQL。",
             handler=_calendar,
+            risk_policy=get_tool_risk_policy("calendar"),
         ),
         "list_tools": ToolSpec(
             name="list_tools",
             description="列出当前可用工具及启用状态。",
             handler=_list_tools,
+            risk_policy=get_tool_risk_policy("list_tools"),
         ),
     }
 
@@ -387,7 +427,7 @@ def _weather(user_id: str, conversation_id: str | None, question: str) -> dict[s
 
 
 def _file_parse(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
-    return parse_file_from_question(question)
+    return parse_file_from_question(question, user_id=user_id)
 
 
 def _image_analyze(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
@@ -403,11 +443,11 @@ def _image_edit(user_id: str, conversation_id: str | None, question: str) -> dic
 
 
 def _todo(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
-    return create_todo_from_question(user_id, conversation_id, question)
+    return preview_todo_from_question(user_id, conversation_id, question)
 
 
 def _calendar(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
-    return create_calendar_event_from_question(user_id, conversation_id, question)
+    return preview_calendar_event_from_question(user_id, conversation_id, question)
 
 
 def _list_tools(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:

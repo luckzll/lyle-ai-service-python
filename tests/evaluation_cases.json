@@ -15,5 +15,48 @@
     "answer": "资料不足，我无法确认这个问题的准确答案。",
     "contexts": [],
     "min_score": 0.55
+  },
+  {
+    "case_type": "memory_recall",
+    "question": "我不喜欢什么？",
+    "answer": "你之前确认过一条负向偏好：你不喜欢帽子。这个记忆置信度较高，如果不准确可以在记忆页禁用或修改。",
+    "contexts": [
+      {
+        "title": "structured_memory",
+        "chunk": "negative_preference=帽子"
+      }
+    ],
+    "expected_answer": "用户不喜欢帽子，并且应该允许用户修改或禁用错误记忆。",
+    "must_include": ["不喜欢帽子", "记忆"],
+    "must_not_include": ["你喜欢帽子"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "task_followup",
+    "question": "这周我要完成产品定位文档，系统应该怎么处理？",
+    "answer": "应该生成一个待确认任务，标题为产品定位文档。用户确认后再写入任务列表，后续在首页和任务页跟进。",
+    "contexts": [
+      {
+        "title": "task_policy",
+        "chunk": "用户表达待办后，系统生成候选任务；用户确认后进入任务系统。"
+      }
+    ],
+    "expected_answer": "生成待确认任务，确认后入库并进入跟进。",
+    "must_include": ["待确认任务", "产品定位文档", "确认"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "tool_confirmation",
+    "question": "帮我创建待办：明天下午三点提交周报",
+    "answer": "这是写操作，应先展示操作预览：创建待办，标题为提交周报，截止时间为明天下午三点。只有用户确认后才真正执行并写入操作日志。",
+    "contexts": [
+      {
+        "title": "tool_policy",
+        "chunk": "写操作必须生成操作预览，用户确认后才执行，执行后留下审计日志。"
+      }
+    ],
+    "expected_answer": "写操作必须预览，用户确认后执行，并记录审计日志。",
+    "must_include": ["写操作", "操作预览", "确认", "操作日志"],
+    "min_score": 0.62
   }
 ]

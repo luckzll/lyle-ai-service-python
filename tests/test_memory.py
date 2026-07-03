@@ -3,11 +3,13 @@ from app.memory import store as memory_store
 from app.memory.store import (
     delete_structured_memory,
     export_memory,
+    format_memory_context,
     _merge_vector_memories,
     recall_memory,
     remember_interaction,
     set_structured_memory_status,
     upsert_structured_memory,
+    get_structured_memory_merge_suggestions,
 )
 
 
@@ -34,6 +36,112 @@ def test_memory_uses_in_memory_fallback(monkeypatch):
     assert len(memory["short_term"]) == 2
     assert memory["structured"] == []
     assert_candidate(result, "food_preference", "西瓜")
+
+
+def test_negative_preference_extracts_as_dislike_candidate(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction("negative-preference-user", "negative-preference-conversation", "我不喜欢帽子", "我记下了")
+
+    assert_candidate(result, "negative_preference", "帽子")
+
+
+def test_candidate_memory_records_source_reference(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction("source-ref-user", "conversation-123", "我喜欢西瓜", "我记下了")
+
+    candidate = result["candidateMemories"][0]
+    assert candidate["source"].startswith("source_ref:conversation:conversation-123\n")
+
+
+def test_structured_memory_confidence_adjusts_with_confirmation_and_disable(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    created = upsert_structured_memory("confidence-user", "preference", "西瓜", confidence=0.8, status="active")
+    refreshed = upsert_structured_memory("confidence-user", "preference", "西瓜", confidence=0.8, status="active")
+    disabled = set_structured_memory_status("confidence-user", "preference", "disabled")
+
+    assert created["confidence"] == 0.8
+    assert refreshed["confidence"] > created["confidence"]
+    assert disabled["confidence"] < refreshed["confidence"]
+
+
+def test_low_confidence_structured_memory_is_marked_cautious_in_context():
+    context = format_memory_context({
+        "summary": "",
+        "structured": [{"key": "preference", "value": "帽子", "confidence": 0.62}],
+        "retrieved": [],
+        "short_term": [],
+    })
+
+    assert "低置信度，仅作参考" in context
+
+
+def test_duplicate_pending_structured_memory_reuses_existing_candidate(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    first = remember_interaction("pending-dedupe-user", "pending-dedupe-conversation", "我不喜欢帽子", "我记下了")
+    second = remember_interaction("pending-dedupe-user", "pending-dedupe-conversation", "我不喜欢帽子", "我记下了")
+    memory = export_memory("pending-dedupe-user", "pending-dedupe-conversation")
+
+    first_candidate = first["candidateMemories"][0]
+    second_candidate = second["candidateMemories"][0]
+    pending_items = [
+        item
+        for item in memory["structured_all"]
+        if item["status"] == "pending" and item["key"].startswith("pending:") and item["key"].endswith(":negative_preference")
+    ]
+
+    assert first_candidate["key"] == second_candidate["key"]
+    assert len(pending_items) == 1
+
+
+def test_merge_suggestions_include_duplicate_pending_memories(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("merge-duplicate-user", "pending:one:negative_preference", "帽子", status="pending")
+    upsert_structured_memory("merge-duplicate-user", "pending:two:negative_preference", "帽子", status="pending")
+
+    suggestions = get_structured_memory_merge_suggestions("merge-duplicate-user")
+
+    duplicate = next(item for item in suggestions if item["group"] == "duplicate:negative_preference:帽子")
+    assert "重复" in duplicate["reason"]
+    assert len(duplicate["items"]) == 2
+
+
+def test_merge_suggestions_group_positive_and_negative_preferences(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("merge-conflict-user", "preference", "帽子", status="active")
+    upsert_structured_memory("merge-conflict-user", "negative_preference", "帽子", status="active")
+
+    suggestions = get_structured_memory_merge_suggestions("merge-conflict-user")
+
+    conflict = next(item for item in suggestions if item["group"] == "conflict:preference")
+    assert "同类" in conflict["reason"]
+    assert len(conflict["items"]) == 2
 
 
 def test_confirmed_candidate_memory_becomes_recallable(monkeypatch):

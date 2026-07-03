@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     # 文件解析工具：仅允许解析本地 file/path 或 MinIO s3:// 路径，不主动下载任意外部 URL。
     tool_file_parse_enabled: bool = True
     tool_file_parse_max_chars: int = 4000
+    # file_parse 工具允许读取的本地目录白名单，逗号分隔；相对路径基于 Python 服务运行目录。
+    # 用户问题中的本地路径只有落在这些目录内才会被解析，防止任意本地文件读取（LFI）。
+    tool_file_parse_allowed_dirs: str = "../storage"
     # 待办和日历工具：写入 PostgreSQL 的 agent_todo / agent_calendar_event 表。
     tool_todo_enabled: bool = True
     tool_calendar_enabled: bool = True
@@ -118,7 +121,8 @@ class Settings(BaseSettings):
     # Prompt 版本号，方便后续灰度、评测和排查。
     prompt_version: str = "lyle-agent-v1"
     # Java 调 Python 时携带的内部 token，防止外部绕过 Java 直接访问 Python。
-    internal_api_token: str = "lyle-internal-dev-token-change-me"
+    # 必须在 .env 中显式配置强随机值（如 openssl rand -hex 32）；为空或占位值时服务会拒绝所有请求。
+    internal_api_token: str = ""
     # Python 服务日志级别。
     log_level: str = "INFO"
     # Python API 简单限流，每分钟最大请求数。
