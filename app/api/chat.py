@@ -85,7 +85,14 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
     return ChatResponse(
         answer=answer,
         sources=[
-            Source(docId=item["doc_id"], title=item["title"], chunk=item["chunk"])
+            Source(
+                docId=item["doc_id"],
+                title=item["title"],
+                chunk=item["chunk"],
+                score=str(item.get("score") or ""),
+                backend=str(item.get("backend") or ""),
+                hitModes=str(item.get("hitModes") or ""),
+            )
             for item in contexts
         ],
         usage=Usage(promptTokens=0, completionTokens=0),
@@ -264,7 +271,14 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 })
                 meta = {
                     "sources": [
-                        {"docId": item["doc_id"], "title": item["title"], "chunk": item["chunk"]}
+                        {
+                            "docId": item["doc_id"],
+                            "title": item["title"],
+                            "chunk": item["chunk"],
+                            "score": str(item.get("score") or ""),
+                            "backend": str(item.get("backend") or ""),
+                            "hitModes": str(item.get("hitModes") or ""),
+                        }
                         for item in contexts
                     ],
                     "agentTrace": agent_trace,

@@ -14,6 +14,9 @@ class Source(BaseModel):
     doc_id: str = Field(alias="docId")
     title: str
     chunk: str
+    score: str = ""
+    backend: str = ""
+    hit_modes: str = Field(default="", alias="hitModes")
 
 
 class Usage(BaseModel):
