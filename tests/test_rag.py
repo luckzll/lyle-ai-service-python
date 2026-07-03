@@ -46,6 +46,50 @@ def test_rag_reranks_in_memory_candidates(monkeypatch, tmp_path: Path):
     assert results[0]["rerank_backend"] == "lexical"
 
 
+def test_rag_keyword_search_hits_title_terms(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "rerank_enabled", False)
+
+    document = tmp_path / "prd.txt"
+    document.write_text("这里记录了模块边界、时间线和验收口径。", encoding="utf-8")
+    add_document("file-prd", "kb-keyword-title", str(document))
+
+    results = search("prd", ["kb-keyword-title"], top_k=1)
+
+    assert results
+    assert results[0]["doc_id"] == "file-prd"
+    assert results[0]["backend"] == "keyword"
+    assert results[0]["hitModes"] == "keyword"
+
+
+def test_rag_hybrid_merges_vector_and_keyword_hits(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "rerank_enabled", False)
+
+    document = tmp_path / "hybrid.txt"
+    document.write_text("海蓝星是一颗被海洋覆盖的虚构星球。", encoding="utf-8")
+    add_document("file-hybrid", "kb-hybrid", str(document))
+    monkeypatch.setattr(settings, "qdrant_enabled", True)
+
+    def fake_qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int):
+        return [{
+            "doc_id": "file-hybrid",
+            "title": "hybrid.txt #1",
+            "chunk": "海蓝星是一颗被海洋覆盖的虚构星球。",
+            "score": "0.62",
+            "backend": "qdrant",
+            "hitModes": "vector",
+        }]
+
+    monkeypatch.setattr("app.rag.store._qdrant_search", fake_qdrant_search)
+
+    results = search("海蓝星是什么", ["kb-hybrid"], top_k=1)
+
+    assert results
+    assert set(results[0]["backend"].split(",")) == {"keyword", "qdrant"}
+    assert set(results[0]["hitModes"].split(",")) == {"keyword", "vector"}
+
+
 def test_query_rewrite_rule_fallback(monkeypatch):
     monkeypatch.setattr(settings, "rag_query_rewrite_enabled", True)
     monkeypatch.setattr(settings, "rag_multi_query_count", 3)

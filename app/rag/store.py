@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 import logging
+import math
+import re
 from threading import Lock
 from time import time
 from urllib.parse import urlparse
@@ -136,10 +138,26 @@ def search(question: str, knowledge_base_ids: list[str], top_k: int = 5) -> list
 
     candidate_limit = _candidate_limit(top_k)
     qdrant_results = _qdrant_search(question, knowledge_base_ids, candidate_limit)
-    if qdrant_results:
-        logger.info("RAG searched by Qdrant. knowledge_base_ids=%s results=%s", knowledge_base_ids, len(qdrant_results))
-        return rerank_items(question, qdrant_results, "chunk", top_k)
+    keyword_results = _keyword_search(question, knowledge_base_ids, candidate_limit)
+    merged = _merge_rag_results(qdrant_results, keyword_results)
+    logger.info(
+        "RAG hybrid searched. knowledge_base_ids=%s vector=%s keyword=%s merged=%s",
+        knowledge_base_ids,
+        len(qdrant_results),
+        len(keyword_results),
+        len(merged),
+    )
+    return rerank_items(question, merged, "chunk", top_k)
 
+
+def _candidate_limit(top_k: int) -> int:
+    if not settings.rerank_enabled:
+        return top_k
+    return max(top_k, settings.rerank_candidate_limit)
+
+
+def _keyword_search(question: str, knowledge_base_ids: list[str], top_k: int) -> list[dict[str, str]]:
+    query_terms = _keyword_terms(question)
     target_ids = set(knowledge_base_ids)
     with _lock:
         matched = [
@@ -147,21 +165,106 @@ def search(question: str, knowledge_base_ids: list[str], top_k: int = 5) -> list
             if item.knowledge_base_id in target_ids
         ]
 
-    results = [
+    scored: list[tuple[float, KnowledgeChunk]] = []
+    for item in matched:
+        score = _keyword_score(query_terms, item)
+        if score <= 0:
+            continue
+        scored.append((score, item))
+    if not scored and not query_terms:
+        scored = [(0.01, item) for item in matched[:top_k]]
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [
         {
             "doc_id": item.doc_id,
             "title": item.title,
             "chunk": item.chunk,
+            "score": str(round(score, 4)),
+            "backend": "keyword",
+            "hitModes": "keyword",
         }
-        for item in matched[:candidate_limit]
+        for score, item in scored[:top_k]
     ]
-    return rerank_items(question, results, "chunk", top_k)
 
 
-def _candidate_limit(top_k: int) -> int:
-    if not settings.rerank_enabled:
-        return top_k
-    return max(top_k, settings.rerank_candidate_limit)
+def _merge_rag_results(
+    vector_results: list[dict[str, str]],
+    keyword_results: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    merged: dict[str, dict[str, str]] = {}
+    for item in [*vector_results, *keyword_results]:
+        chunk = item.get("chunk", "")
+        doc_id = item.get("doc_id", "")
+        if not chunk:
+            continue
+        key = f"{doc_id}:{chunk}"
+        backend = item.get("backend") or "unknown"
+        hit_modes = set(filter(None, (item.get("hitModes") or backend).split(",")))
+        score = _safe_float(item.get("score"))
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = {
+                **item,
+                "score": str(score),
+                "backend": backend,
+                "hitModes": ",".join(sorted(hit_modes)),
+            }
+            continue
+        existing_backends = set(filter(None, (existing.get("backend") or "").split(",")))
+        existing_backends.add(backend)
+        existing_modes = set(filter(None, (existing.get("hitModes") or existing.get("backend") or "").split(",")))
+        existing_modes.update(hit_modes)
+        if score > _safe_float(existing.get("score")):
+            existing.update({**item, "score": str(score)})
+        existing["backend"] = ",".join(sorted(existing_backends))
+        existing["hitModes"] = ",".join(sorted(existing_modes))
+    return sorted(merged.values(), key=lambda item: _safe_float(item.get("score")), reverse=True)
+
+
+def _keyword_terms(text: str) -> list[str]:
+    lowered = text.lower()
+    latin_terms = re.findall(r"[a-z0-9][a-z0-9._-]{1,}", lowered)
+    chinese_terms = [
+        token
+        for token in re.split(r"[\s，。！？、,.!?；;：:（）()\[\]【】\"'“”]+", text)
+        if len(token) >= 2 and not re.fullmatch(r"[a-zA-Z0-9._-]+", token)
+    ]
+    chinese_chars = re.findall(r"[\u4e00-\u9fff]", text)
+    terms = [*latin_terms, *chinese_terms, *chinese_chars]
+    seen: set[str] = set()
+    result: list[str] = []
+    for term in terms:
+        cleaned = term.strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            result.append(cleaned)
+    return result
+
+
+def _keyword_score(query_terms: list[str], item: KnowledgeChunk) -> float:
+    if not query_terms:
+        return 0.0
+    haystack = f"{item.title}\n{item.chunk}".lower()
+    matched = 0
+    weighted = 0.0
+    for term in query_terms:
+        count = haystack.count(term)
+        if count <= 0:
+            continue
+        matched += 1
+        weighted += (2.0 if len(term) >= 2 else 0.7) * (1.0 + math.log(count))
+    if matched == 0:
+        return 0.0
+    coverage = matched / len(query_terms)
+    return min(1.0, (weighted / max(len(query_terms), 1)) * 0.35 + coverage * 0.65)
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _extract_document_candidate_memories(
