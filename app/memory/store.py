@@ -16,6 +16,13 @@ from app.core.database import postgres_connection
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
 from app.chains.structured_memory_chain import invoke_structured_memory_chain
 from app.llm.client import summarize_memory
+from app.memory.context_builder import build_profile_memory_context
+from app.memory.evidence_store import evidence_count_by_profile
+from app.memory.fragments import list_memory_fragments, set_memory_fragment_status
+from app.memory.profile_builder import build_profile_from_structured_memory
+from app.memory.profile_schema import profile_schema_overview, schema_path_for_memory
+from app.memory.profile_store import list_user_profiles, set_user_profile_status
+from app.memory.recall_planner import plan_recall
 from app.rag.reranker import rerank_items
 import logging
 
@@ -87,6 +94,8 @@ def recall_memory(
     summary_result = _load_summary_with_meta(user_id, conversation_id, allow_fallback=True)
     summary = str(summary_result["summary"])
     summary_meta = {key: value for key, value in summary_result.items() if key != "summary"}
+    recall_plan = plan_recall(question)
+    profile_context = build_profile_memory_context(user_id, question, recall_plan, limit=settings.memory_recall_limit)
     structured = _load_structured(user_id, question)
     candidate_limit = _memory_candidate_limit()
     semantic: list[dict[str, object]] = []
@@ -109,6 +118,10 @@ def recall_memory(
     return {
         "summary": summary,
         "summary_meta": summary_meta,
+        "recall_plan": recall_plan,
+        "profile_context": profile_context,
+        "profiles": profile_context.get("profiles") or [],
+        "fragments": profile_context.get("fragments") or [],
         "short_term": [asdict(item) for item in short],
         "structured": [asdict(item) for item in structured],
         "semantic": semantic,
@@ -222,6 +235,7 @@ def extract_structured_memory(user_id: str, conversation_id: str | None, text: s
             status="pending",
         )
         item["targetKey"] = key
+        item["schemaPath"] = schema_path_for_memory(key, value)
         candidate_memories.append(item)
     return candidate_memories
 
@@ -231,6 +245,10 @@ def format_memory_context(memory: dict[str, object]) -> str:
     summary = memory.get("summary")
     if summary:
         parts.append(f"长期摘要：{summary}")
+
+    profile_context = (memory.get("profile_context") or {})
+    if isinstance(profile_context, dict) and profile_context.get("context"):
+        parts.append(str(profile_context["context"]))
 
     structured = memory.get("structured") or []
     if structured:
@@ -263,6 +281,14 @@ def export_memory(user_id: str, conversation_id: str | None) -> dict[str, object
         for item in memory.get("short_term", [])  # type: ignore[union-attr]
     ]
     memory["structured_all"] = [asdict(item) for item in _load_all_structured(user_id)]
+    profiles = list_user_profiles(user_id, limit=300)
+    evidence_counts = evidence_count_by_profile(user_id)
+    memory["profiles"] = [
+        {**item, "evidenceCount": evidence_counts.get(int(item["id"]), 0)}
+        for item in profiles
+    ]
+    memory["fragments"] = list_memory_fragments(user_id, limit=300)
+    memory["profile_schema"] = profile_schema_overview()
     return memory
 
 
@@ -526,6 +552,7 @@ def upsert_structured_memory(
     )
     if status == "active" and not key.startswith("pending:"):
         _disable_pending_structured_memories(user_id, key)
+        _sync_active_structured_memory_to_profile(user_id, key, value, source, confidence)
     _record_structured_memory_history(
         user_id,
         key,
@@ -588,6 +615,7 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
             item.confidence,
             status,
         )
+        _sync_structured_status_to_profile(user_id, key, item.value, status)
         return asdict(item)
 
     with _lock:
@@ -599,6 +627,7 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
         item.updated_at = now
         _record_structured_memory_history(user_id, key, item.value, item.value, f"status:{status}", item.source, item.confidence, status)
         logger.info("Structured memory status changed. user_id=%s key=%s status=%s", user_id, key, status)
+        _sync_structured_status_to_profile(user_id, key, item.value, status)
         return asdict(item)
 
 
@@ -1655,9 +1684,35 @@ def _structured_memory_from_row(row: tuple) -> StructuredMemory:
     )
 
 
+def _sync_active_structured_memory_to_profile(
+    user_id: str,
+    key: str,
+    value: str,
+    source: str,
+    confidence: float,
+) -> None:
+    try:
+        build_profile_from_structured_memory(user_id, key, value, source, confidence)
+    except Exception:
+        logger.exception("V2 profile sync failed. user_id=%s key=%s", user_id, key)
+
+
+def _sync_structured_status_to_profile(user_id: str, key: str, value: str, status: str) -> None:
+    if key.startswith("pending:"):
+        return
+    try:
+        schema_path = schema_path_for_memory(key, value)
+        set_user_profile_status(user_id, schema_path, status)
+        for fragment in list_memory_fragments(user_id, category=schema_path, limit=200):
+            if str(fragment.get("normalizedText") or "") == value:
+                set_memory_fragment_status(user_id, int(fragment["id"]), status)
+    except Exception:
+        logger.exception("V2 profile status sync failed. user_id=%s key=%s status=%s", user_id, key, status)
+
+
 def _normalise_memory_status(status: str) -> str:
     value = (status or "active").strip().lower()
-    return value if value in {"active", "pending", "disabled", "expired"} else "active"
+    return value if value in {"active", "pending", "disabled", "forgotten", "expired"} else "active"
 
 
 def _pending_structured_memory_key(

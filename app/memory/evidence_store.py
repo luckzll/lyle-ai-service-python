@@ -133,6 +133,11 @@ def _ensure_postgres_schema() -> None:
     global _postgres_ready
     if _postgres_ready:
         return
+    from app.memory.fragments import _ensure_postgres_schema as ensure_fragment_schema
+    from app.memory.profile_store import _ensure_postgres_schema as ensure_profile_schema
+
+    ensure_fragment_schema()
+    ensure_profile_schema()
     with postgres_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(

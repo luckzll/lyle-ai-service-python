@@ -10,6 +10,9 @@ from app.memory.store import (
     set_structured_memory_status,
     upsert_structured_memory,
 )
+from app.memory.evidence_store import list_profile_evidence
+from app.memory.fragments import list_memory_fragments, set_memory_fragment_status
+from app.memory.profile_store import list_user_profiles, set_user_profile_status
 
 router = APIRouter()
 
@@ -27,9 +30,51 @@ class StructuredMemoryStatusRequest(BaseModel):
     status: str
 
 
+class MemoryStatusRequest(BaseModel):
+    status: str
+
+
 @router.get("/memory/{user_id}")
 def get_memory(user_id: str, conversationId: str | None = None) -> dict[str, object]:
     return export_memory(user_id, conversationId)
+
+
+@router.get("/memory/{user_id}/profiles")
+def memory_profiles(user_id: str, status: str | None = None, limit: int = 200) -> dict[str, object]:
+    return {"items": list_user_profiles(user_id, status=status, limit=limit)}
+
+
+@router.get("/memory/{user_id}/fragments")
+def memory_fragments(
+    user_id: str,
+    status: str | None = None,
+    category: str | None = None,
+    limit: int = 200,
+) -> dict[str, object]:
+    return {"items": list_memory_fragments(user_id, status=status, category=category, limit=limit)}
+
+
+@router.get("/memory/{user_id}/profiles/{profile_id}/evidence")
+def memory_profile_evidence(user_id: str, profile_id: int, limit: int = 100) -> dict[str, object]:
+    return {"items": list_profile_evidence(user_id, profile_id, limit=limit)}
+
+
+@router.patch("/memory/{user_id}/profiles/{schema_path:path}/status")
+def change_profile_status(
+    user_id: str,
+    schema_path: str,
+    request: MemoryStatusRequest,
+) -> dict[str, object]:
+    return set_user_profile_status(user_id, schema_path, request.status)
+
+
+@router.patch("/memory/{user_id}/fragments/{fragment_id}/status")
+def change_fragment_status(
+    user_id: str,
+    fragment_id: int,
+    request: MemoryStatusRequest,
+) -> dict[str, object]:
+    return set_memory_fragment_status(user_id, fragment_id, request.status)
 
 
 @router.get("/memory/{user_id}/structured/{key}/history")

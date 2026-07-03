@@ -11,6 +11,8 @@ from app.memory.store import (
     upsert_structured_memory,
     get_structured_memory_merge_suggestions,
 )
+from app.memory.evidence_store import list_profile_evidence
+from app.memory.profile_schema import schema_path_for_memory
 
 
 def assert_candidate(result: dict[str, object], target_key: str, value: str):
@@ -48,6 +50,13 @@ def test_negative_preference_extracts_as_dislike_candidate(monkeypatch):
     result = remember_interaction("negative-preference-user", "negative-preference-conversation", "我不喜欢帽子", "我记下了")
 
     assert_candidate(result, "negative_preference", "帽子")
+    assert result["candidateMemories"][0]["schemaPath"] == "preferences.visual.dislikes"
+
+
+def test_schema_path_maps_legacy_memory_keys_to_profile_paths():
+    assert schema_path_for_memory("career", "产品经理方向") == "work.current_role"
+    assert schema_path_for_memory("negative_preference", "帽子") == "preferences.visual.dislikes"
+    assert schema_path_for_memory("food_preference", "西瓜") == "preferences.food.likes"
 
 
 def test_candidate_memory_records_source_reference(monkeypatch):
@@ -160,6 +169,49 @@ def test_confirmed_candidate_memory_becomes_recallable(monkeypatch):
     upsert_structured_memory("confirm-user", "food_preference", "西瓜", source="confirmed", status="active")
     memory_after = recall_memory("confirm-user", "confirm-conversation", "我喜欢什么")
     assert any(item["key"] == "food_preference" and item["value"] == "西瓜" for item in memory_after["structured"])
+
+
+def test_confirmed_structured_memory_projects_to_profile_fragment_and_evidence(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory(
+        "profile-user",
+        "negative_preference",
+        "帽子",
+        source="source_ref:conversation:profile-conversation\n我不喜欢帽子",
+        confidence=0.9,
+        status="active",
+    )
+
+    memory = export_memory("profile-user", "profile-conversation")
+    profile = next(item for item in memory["profiles"] if item["schemaPath"] == "preferences.visual.dislikes")
+    fragment = next(item for item in memory["fragments"] if item["category"] == "preferences.visual.dislikes")
+    evidence = list_profile_evidence("profile-user", int(profile["id"]))
+
+    assert profile["value"] == "帽子"
+    assert profile["evidenceCount"] == 1
+    assert fragment["normalizedText"] == "帽子"
+    assert evidence[0]["fragmentId"] == fragment["id"]
+
+
+def test_recall_memory_includes_schema_aware_profile_context(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("profile-recall-user", "career", "产品经理方向", status="active")
+    upsert_structured_memory("profile-recall-user", "food_preference", "西瓜", status="active")
+
+    memory = recall_memory("profile-recall-user", None, "帮我规划一下这周产品定位文档怎么做")
+    context = format_memory_context(memory)
+
+    assert any(item["schemaPath"] == "work.current_role" for item in memory["profiles"])
+    assert all(item["schemaPath"] != "preferences.food.likes" for item in memory["profiles"])
+    assert "当前角色：产品经理方向" in context
 
 
 def test_manual_structured_memory_upsert_and_delete(monkeypatch):
