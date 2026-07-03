@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from app.tools import task_tool
+from app.tools.operation_confirmation import _idempotency_key, _normalise_tool_result
 from app.tools.task_tool import _extract_cn_datetime, extract_candidate_tasks, preview_todo_from_question
 
 
@@ -53,3 +54,39 @@ def test_preview_todo_from_question_requires_confirmation(monkeypatch):
     assert captured["operation_type"] == "todo.create"
     assert captured["payload"]["title"] == "提交周报"
     assert captured["payload"]["dueAt"].endswith("07:00:00+00:00")
+
+
+def test_pending_operation_idempotency_key_is_payload_order_independent():
+    first = _idempotency_key(
+        user_id="u1",
+        conversation_id="c1",
+        tool_name="todo",
+        operation_type="todo.create",
+        payload={"title": "提交周报", "dueAt": "2026-07-04T07:00:00+00:00"},
+    )
+    second = _idempotency_key(
+        user_id="u1",
+        conversation_id="c1",
+        tool_name="todo",
+        operation_type="todo.create",
+        payload={"dueAt": "2026-07-04T07:00:00+00:00", "title": "提交周报"},
+    )
+
+    assert first == second
+    assert len(first) == 64
+
+
+def test_tool_result_normalises_legacy_task_result():
+    result = _normalise_tool_result(
+        {"ok": True, "content": "已创建待办：提交周报", "todo": {"id": 1}},
+        tool="todo",
+        operation_type="todo.create",
+        risk_level="write",
+    )
+
+    assert result["ok"] is True
+    assert result["operationType"] == "todo.create"
+    assert result["requiresConfirmation"] is False
+    assert result["retryable"] is False
+    assert result["userMessage"] == "已创建待办：提交周报"
+    assert result["result"] == {"todo": {"id": 1}}
