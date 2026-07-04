@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from app.evaluation.scorer import evaluate_answer
+from app.evaluation.regression_runner import run_regression_cases
 
 
 def test_evaluation_regression_cases():
@@ -18,3 +19,11 @@ def test_evaluation_regression_cases():
             rubric=case.get("rubric"),
         )
         assert result["score"] >= case["min_score"]
+
+
+def test_regression_runner_returns_pass_rate():
+    result = run_regression_cases("tests/evaluation_cases.json")
+
+    assert result["total"] > 0
+    assert result["passed"] == result["total"]
+    assert result["passRate"] == 1.0

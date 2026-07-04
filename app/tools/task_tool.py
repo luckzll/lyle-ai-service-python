@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import postgres_connection
+from app.memory.profile_store import list_user_profiles
 from app.tools.operation_confirmation import create_pending_operation
 
 LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
@@ -38,6 +39,15 @@ def create_todo(
 
     now = datetime.now(UTC)
     with postgres_connection() as conn:
+        duplicate = _find_open_duplicate_todo(conn, user_id, title)
+        if duplicate:
+            duplicate["goalLinks"] = infer_task_goal_links(user_id, title)
+            return {
+                "ok": True,
+                "content": f"已存在相同待办：{title}，本次没有重复创建。",
+                "duplicate": True,
+                "todo": duplicate,
+            }
         row = conn.execute(
             """
             INSERT INTO agent_todo (user_id, conversation_id, title, status, due_at, created_at, updated_at)
@@ -58,6 +68,8 @@ def create_todo(
             "status": "open",
             "dueAt": due_text,
             "conversationId": conversation_id or "",
+            "sourceRef": f"conversation:{conversation_id}" if conversation_id else "",
+            "goalLinks": infer_task_goal_links(user_id, title),
             "createdAt": row[1].isoformat(),
             "updatedAt": row[2].isoformat(),
         },
@@ -104,6 +116,14 @@ def create_calendar_event(
 
     now = datetime.now(UTC)
     with postgres_connection() as conn:
+        duplicate = _find_duplicate_calendar_event(conn, user_id, title, starts_at)
+        if duplicate:
+            return {
+                "ok": True,
+                "content": f"已存在相同日程：{title}，本次没有重复创建。",
+                "duplicate": True,
+                "event": duplicate,
+            }
         row = conn.execute(
             """
             INSERT INTO agent_calendar_event
@@ -125,6 +145,7 @@ def create_calendar_event(
             "startsAt": time_text,
             "status": "scheduled",
             "conversationId": conversation_id or "",
+            "sourceRef": f"conversation:{conversation_id}" if conversation_id else "",
             "createdAt": row[1].isoformat(),
             "updatedAt": row[2].isoformat(),
         },
@@ -162,6 +183,106 @@ def _cleanup_title(question: str, prefixes: list[str]) -> str:
         title = title.replace(prefix, "")
     title = re.sub(r"^(：|:|，|,|\s)+", "", title).strip()
     return _strip_leading_datetime_phrase(title)[:200]
+
+
+def _find_open_duplicate_todo(conn, user_id: str, title: str) -> dict[str, object] | None:
+    row = conn.execute(
+        """
+        SELECT id, title, status, due_at, conversation_id, created_at, updated_at
+        FROM agent_todo
+        WHERE user_id = %s AND status = 'open' AND lower(title) = lower(%s)
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user_id, title),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "status": row[2],
+        "dueAt": row[3].isoformat() if row[3] else None,
+        "conversationId": row[4],
+        "sourceRef": f"conversation:{row[4]}" if row[4] else "",
+        "createdAt": row[5].isoformat(),
+        "updatedAt": row[6].isoformat(),
+    }
+
+
+def _find_duplicate_calendar_event(
+    conn,
+    user_id: str,
+    title: str,
+    starts_at: datetime | None,
+) -> dict[str, object] | None:
+    row = conn.execute(
+        """
+        SELECT id, title, starts_at, status, conversation_id, created_at, updated_at
+        FROM agent_calendar_event
+        WHERE user_id = %s
+          AND status = 'scheduled'
+          AND lower(title) = lower(%s)
+          AND ((starts_at IS NULL AND %s IS NULL) OR starts_at = %s)
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (user_id, title, starts_at, starts_at),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "title": row[1],
+        "startsAt": row[2].isoformat() if row[2] else None,
+        "status": row[3],
+        "conversationId": row[4],
+        "sourceRef": f"conversation:{row[4]}" if row[4] else "",
+        "createdAt": row[5].isoformat(),
+        "updatedAt": row[6].isoformat(),
+    }
+
+
+def infer_task_goal_links(user_id: str, title: str) -> list[dict[str, object]]:
+    try:
+        profiles = list_user_profiles(user_id, status="active", limit=200)
+    except Exception:
+        return []
+    title_terms = _link_terms(title)
+    links: list[dict[str, object]] = []
+    for profile in profiles:
+        schema_path = str(profile.get("schemaPath") or "")
+        if not schema_path.startswith("goals.") and schema_path != "projects.current":
+            continue
+        value = str(profile.get("summary") or profile.get("value") or "")
+        overlap = title_terms & _link_terms(value)
+        if not overlap and title and value and (title in value or value in title):
+            overlap = {title[:12]}
+        if not overlap:
+            continue
+        links.append({
+            "schemaPath": schema_path,
+            "label": profile.get("label") or schema_path,
+            "value": value,
+            "confidence": profile.get("confidence"),
+            "reason": "任务标题与当前目标/项目存在关键词重合。",
+        })
+    return links[:3]
+
+
+def _link_terms(text: str) -> set[str]:
+    chinese_terms = {
+        token
+        for token in re.split(r"[\s，。！？、,.!?；;：:（）()\[\]【】\"'“”]+", text)
+        if len(token) >= 2
+    }
+    cjk_bigrams = {
+        text[index:index + 2]
+        for index in range(max(len(text) - 1, 0))
+        if re.fullmatch(r"[\u4e00-\u9fff]{2}", text[index:index + 2])
+    }
+    latin_terms = set(re.findall(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,}", text.lower()))
+    return chinese_terms | cjk_bigrams | latin_terms
 
 
 def _extract_candidate_todo_title(question: str) -> str:

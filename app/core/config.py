@@ -116,6 +116,9 @@ class Settings(BaseSettings):
     notification_worker_enabled: bool = True
     # 后台提醒扫描间隔，单位：秒。
     notification_worker_interval_seconds: int = 30
+    # 后台记忆衰减：开启后会周期性把长期未使用画像的有效置信度写回，并过期极低置信度画像。
+    memory_decay_worker_enabled: bool = True
+    memory_decay_worker_interval_seconds: int = 3600
 
     # ===== Prompt / 安全 / 日志 / 限流 =====
     # Prompt 版本号，方便后续灰度、评测和排查。
@@ -189,6 +192,9 @@ class Settings(BaseSettings):
     rag_query_rewrite_enabled: bool = True
     rag_multi_query_count: int = 3
     rag_context_top_k: int = 5
+    # 命中文档片段后，补充同章节/相邻片段作为父子上下文，提升跨段落回答稳定性。
+    rag_parent_child_expand_enabled: bool = True
+    rag_parent_child_sibling_limit: int = 2
     # sufficiency check 会判断知识库资料是否足够回答。
     rag_sufficiency_check_enabled: bool = True
 
@@ -211,6 +217,8 @@ class Settings(BaseSettings):
     memory_compression_trigger_limit: int = 24
     # 记忆召回 top_k 数量。
     memory_recall_limit: int = 6
+    # 开启后 Recall Planner 会先用意图模型选择画像路径，失败时回退规则召回。
+    recall_planner_llm_enabled: bool = True
     # 记忆接口导出给前端时，单条短期记忆内容的最大长度。
     memory_export_turn_max_chars: int = 1200
     # 向量记忆低于该相似度不注入上下文。调试页仍可看到原始语义召回候选。

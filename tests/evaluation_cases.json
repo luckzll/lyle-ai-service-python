@@ -58,5 +58,242 @@
     "expected_answer": "写操作必须预览，用户确认后执行，并记录审计日志。",
     "must_include": ["写操作", "操作预览", "确认", "操作日志"],
     "min_score": 0.62
+  },
+  {
+    "case_type": "memory_schema",
+    "question": "用户说“我不喜欢帽子”，系统应该怎么归类？",
+    "answer": "应生成待确认记忆，并归入 preferences.visual.dislikes。用户确认后写入记忆片段、用户画像，并保留证据来源。",
+    "contexts": [
+      {
+        "title": "memory_schema",
+        "chunk": "不喜欢帽子这类视觉形象偏好应归入 preferences.visual.dislikes，确认后写入 fragment/profile/evidence。"
+      }
+    ],
+    "expected_answer": "归入视觉负向偏好 preferences.visual.dislikes，并保留证据。",
+    "must_include": ["preferences.visual.dislikes", "待确认", "证据"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_forget",
+    "question": "用户确认“忘掉帽子”后，系统后续能否继续主动提帽子？",
+    "answer": "不能。确认遗忘请求后，匹配的结构化记忆、用户画像和记忆片段应标记为 forgotten，后续召回和回答都不能主动使用这条记忆。",
+    "contexts": [
+      {
+        "title": "memory_governance",
+        "chunk": "forgotten 记忆不参与召回，Reviewer 应拦截回答中引用已遗忘记忆的行为。"
+      }
+    ],
+    "expected_answer": "标记 forgotten，并且后续不能主动召回或回答。",
+    "must_include": ["forgotten", "不能主动", "召回"],
+    "must_not_include": ["继续主动提帽子"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "sensitive_memory",
+    "question": "用户说“后端开发工程师是隐私”，系统应该怎么处理？",
+    "answer": "应先生成敏感信息候选，用户确认后把匹配的职业画像和相关片段设为 disabled 或敏感治理状态。后续默认不把这类信息注入回答上下文。",
+    "contexts": [
+      {
+        "title": "sensitive_policy",
+        "chunk": "敏感信息默认不主动输出，除非用户明确询问且场景合理；disabled/sensitive 不进入普通回答上下文。"
+      }
+    ],
+    "expected_answer": "确认后不再默认注入回答上下文。",
+    "must_include": ["敏感信息", "确认", "不把", "回答上下文"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "hybrid_rag",
+    "question": "知识库向量召回弱时，标题关键词 prd 是否还能命中？",
+    "answer": "可以。V2 RAG 会同时执行 vector 和 keyword 检索，合并去重后 rerank。即使向量不可用，关键词检索仍可用标题或专有名词命中，并在来源中展示 hitModes。",
+    "contexts": [
+      {
+        "title": "hybrid_rag",
+        "chunk": "RAG 流程：query rewrite -> vector search -> keyword search -> merge dedupe -> rerank -> sufficiency judge。来源展示 backend/hitModes。"
+      }
+    ],
+    "expected_answer": "关键词检索可兜底，并展示 hitModes。",
+    "must_include": ["vector", "keyword", "hitModes", "rerank"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "tool_idempotency",
+    "question": "用户重复点击同一个待办确认，会发生什么？",
+    "answer": "不会重复创建待办。pending operation 使用 user、conversation、tool、operationType 和规范化 payload 生成 idempotency_key，重复确认会返回已确认结果而不再次执行。",
+    "contexts": [
+      {
+        "title": "tool_idempotency",
+        "chunk": "写操作确认增加 idempotency_key，重复点击确认不会重复创建任务。"
+      }
+    ],
+    "expected_answer": "不会重复创建，返回已确认结果。",
+    "must_include": ["不会重复", "idempotency_key", "确认"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "reviewer_grounding",
+    "question": "知识库资料不足时，回答应该怎么表达？",
+    "answer": "应明确说明资料不足或无法确认，只回答来源中能支持的部分。不能在 sufficiency=false 时编造确定结论。",
+    "contexts": [
+      {
+        "title": "reviewer_grounding",
+        "chunk": "当 sufficiency judge 判定资料不足时，Reviewer 要求回答说明资料不足，不得编造。"
+      }
+    ],
+    "expected_answer": "说明资料不足，不编造确定结论。",
+    "must_include": ["资料不足", "无法确认", "不能", "编造"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "recall_planner_complex",
+    "question": "用户同时问设计偏好、隐私边界和本周任务时，Recall Planner 应该怎么做？",
+    "answer": "应该选择多个 schemaPaths，例如 preferences.visual.likes、memory_control.sensitive_info、goals.current_week 和 projects.current，并保留 planner 和 reason，避免只召回单一路径。",
+    "contexts": [{"title": "recall_planner", "chunk": "复杂表达需要多意图召回，LLM planner 优先，规则兜底。"}],
+    "must_include": ["schemaPaths", "preferences.visual.likes", "memory_control.sensitive_info", "goals.current_week"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "recall_planner_fallback",
+    "question": "Recall Planner 模型不可用时怎么办？",
+    "answer": "模型不可用或返回非法 JSON 时应自动回退规则召回，结果里 planner 标记为 rule，保证记忆召回不中断。",
+    "contexts": [{"title": "recall_planner", "chunk": "LLM Recall Planner 失败后使用 rule fallback。"}],
+    "must_include": ["回退", "规则", "planner"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "rag_parent_child",
+    "question": "RAG 命中单个片段但答案需要相邻段落时怎么办？",
+    "answer": "应启用父子切片召回，命中片段后补充同章节或相邻片段，并用 hitModes=parent_child 标记扩展上下文。",
+    "contexts": [{"title": "rag_parent_child", "chunk": "父子切片扩展会补同章节或相邻片段，来源标记 parent_child。"}],
+    "must_include": ["父子切片", "相邻片段", "parent_child"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "rag_source_trace",
+    "question": "知识库来源如何定位回原文片段？",
+    "answer": "每个命中文档片段应带 parentTitle、chunkIndex、startChar 和 endChar，前端 debug 可展示章节、分块序号和字符范围。",
+    "contexts": [{"title": "rag_trace", "chunk": "RAG context metadata includes parentTitle, chunkIndex, startChar, endChar。"}],
+    "must_include": ["parentTitle", "chunkIndex", "startChar", "endChar"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "rag_reranker",
+    "question": "Reranker 如何避免只靠 lexical？",
+    "answer": "系统支持 flag_embedding reranker，配置依赖可用时使用模型分数；失败且允许 fallback 时才退回 lexical，并在 rerank_backend 中展示来源。",
+    "contexts": [{"title": "reranker", "chunk": "rerank_provider=flag_embedding 时使用 FlagEmbedding，失败后 fallback lexical。"}],
+    "must_include": ["flag_embedding", "模型分数", "lexical", "rerank_backend"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "task_goal_link",
+    "question": "创建待办后如何和本周目标关联？",
+    "answer": "任务标题会与 goals.current_week、goals.current_month、projects.current 做关键词匹配，匹配后返回 goalLinks，任务页展示关联目标。",
+    "contexts": [{"title": "task_goal_link", "chunk": "任务创建和列表响应包含 goalLinks，用于展示任务与目标/项目的关联。"}],
+    "must_include": ["goals.current_week", "projects.current", "goalLinks", "任务页"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "task_duplicate",
+    "question": "重复创建同标题 open 待办时怎么办？",
+    "answer": "系统会识别同用户同标题的 open 待办，返回已有 todo 并标记 duplicate=true，不再重复插入数据库。",
+    "contexts": [{"title": "task_duplicate", "chunk": "create_todo 会查询同用户同标题 open 待办，命中则返回 duplicate。"}],
+    "must_include": ["open 待办", "duplicate", "不再重复"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "task_source_evidence",
+    "question": "任务从哪里来的如何展示？",
+    "answer": "待办和日程返回 sourceRef，例如 conversation:xxx，前端任务页显示来源，方便回到产生任务的对话证据。",
+    "contexts": [{"title": "task_source", "chunk": "任务 API 返回 sourceRef，前端展示来源。"}],
+    "must_include": ["sourceRef", "conversation", "来源"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "operation_double_confirm",
+    "question": "用户连续点击两次确认会怎样？",
+    "answer": "确认接口会锁定 pending operation，并通过 idempotency_key 识别重复操作。第二次确认返回 idempotentReplay，不会重复执行。",
+    "contexts": [{"title": "operation_idempotency", "chunk": "confirm_pending_operation 使用 FOR UPDATE 和 idempotency_key 防止重复执行。"}],
+    "must_include": ["idempotency_key", "idempotentReplay", "不会重复执行"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "operation_reject",
+    "question": "操作被拒绝后还能确认吗？",
+    "answer": "不能。拒绝后状态变为 rejected，前端不再展示确认按钮，后端确认接口也会拒绝非 pending 状态。",
+    "contexts": [{"title": "operation_reject", "chunk": "只有 pending operation 可以 confirm；rejected 不展示确认按钮。"}],
+    "must_include": ["rejected", "不再展示确认按钮", "pending"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "operation_retry",
+    "question": "工具失败时怎么提示？",
+    "answer": "工具结果应包含 error.code、error.message 和 retryable。前端根据 retryable 提示是否可以重试，避免用户不知道失败原因。",
+    "contexts": [{"title": "tool_result", "chunk": "ToolResult 规范化包含 error 和 retryable 字段。"}],
+    "must_include": ["error.code", "error.message", "retryable"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_denial_conflict",
+    "question": "用户否认旧记忆时怎么处理？",
+    "answer": "如果用户明确说旧记忆不准确，例如“我不是产品经理了”，系统会把匹配的结构化记忆和画像标记为 conflicted，避免继续主动召回。",
+    "contexts": [{"title": "memory_conflict", "chunk": "用户否认旧记忆时标记 conflicted，后续不作为 active 记忆注入。"}],
+    "must_include": ["conflicted", "不准确", "避免继续主动召回"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_merge_suggestion",
+    "question": "新旧记忆冲突但不能自动判断时怎么办？",
+    "answer": "治理中心应生成 merge suggestions，把同类 key 多个值或正负偏好冲突列出来，由用户选择保留、合并、禁用或永久删除。",
+    "contexts": [{"title": "memory_merge", "chunk": "structured merge suggestions includes duplicate and conflict groups。"}],
+    "must_include": ["merge suggestions", "同类 key", "禁用", "永久删除"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_history",
+    "question": "手动编辑记忆后如何追踪版本？",
+    "answer": "结构化记忆写入、替换、禁用、冲突和永久删除都会写 structured_memory_history，详情页可以展示 oldValue、newValue、action、source 和 confidence。",
+    "contexts": [{"title": "memory_history", "chunk": "structured_memory_history records old_value, new_value, action, source, confidence, status。"}],
+    "must_include": ["structured_memory_history", "oldValue", "newValue", "action"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_low_confidence",
+    "question": "低置信度记忆能直接确定表达吗？",
+    "answer": "不能。0.6 到 0.75 的记忆只能谨慎使用，回答要说“可能、倾向、看起来”，Reviewer 会拦截不谨慎的确定表达。",
+    "contexts": [{"title": "low_confidence", "chunk": "低置信度记忆仅作参考，回答需谨慎表达。"}],
+    "must_include": ["0.6", "0.75", "谨慎", "Reviewer"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_sensitive_context",
+    "question": "敏感记忆确认后是否进入普通回答上下文？",
+    "answer": "默认不进入。敏感信息会进入治理中心，普通回答上下文过滤 sensitive profile，除非用户明确要求且场景合理。",
+    "contexts": [{"title": "sensitive_context", "chunk": "sensitive profile is filtered from normal answer context。"}],
+    "must_include": ["默认不进入", "治理中心", "过滤"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "memory_decay",
+    "question": "长期不用的画像如何生命周期管理？",
+    "answer": "memory_decay_worker 会周期性把长期未使用画像的有效置信度写回，低于 active 阈值时标记 expired，避免老旧画像长期污染回答。",
+    "contexts": [{"title": "memory_decay", "chunk": "memory_decay_worker applies profile decay and expires low confidence profiles。"}],
+    "must_include": ["memory_decay_worker", "expired", "置信度"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "chat_used_memory",
+    "question": "聊天里如何看本轮用了哪些记忆？",
+    "answer": "调试模式下展示 used memory panel，列出本轮注入的画像、结构化记忆和来源，普通模式不打扰主对话。",
+    "contexts": [{"title": "chat_debug", "chunk": "Chat debug shows usedMemoryItems and source panels。"}],
+    "must_include": ["调试模式", "used memory", "来源"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "final_acceptance",
+    "question": "V2 收尾后怎么判断可进入下个版本？",
+    "answer": "需要后端全量测试、前端单测和构建、关键 E2E、回归评测集全部通过，并确认未提交代码等待用户最终验收。",
+    "contexts": [{"title": "acceptance", "chunk": "Release gate: backend tests, frontend tests/build, E2E, regression cases。"}],
+    "must_include": ["全量测试", "E2E", "回归评测", "未提交代码"],
+    "min_score": 0.62
   }
 ]

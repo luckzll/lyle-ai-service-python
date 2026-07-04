@@ -30,6 +30,11 @@ _lock = Lock()
 _profiles: dict[str, dict[str, UserProfile]] = {}
 _next_id = 1
 _postgres_ready = False
+PROFILE_USAGE_CONFIDENCE_BOOST = 0.01
+PROFILE_MAX_CONFIDENCE = 0.95
+PROFILE_MONTHLY_DECAY = 0.01
+PROFILE_DECAY_INTERVAL_SECONDS = 30 * 24 * 60 * 60
+PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE = 0.5
 
 
 def upsert_user_profile(
@@ -195,6 +200,48 @@ def set_user_profile_status(user_id: str, schema_path: str, status: str) -> dict
     return _profile_to_api(item)
 
 
+def update_user_profile_summary(
+    user_id: str,
+    schema_path: str,
+    summary: str,
+    *,
+    confidence_boost: float = 0.0,
+) -> dict[str, object]:
+    summary = summary.strip()
+    if not summary:
+        return get_user_profile(user_id, schema_path) or {}
+    now = time()
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_profile
+                    SET summary = %s,
+                        confidence = LEAST(%s, confidence + %s),
+                        updated_at = to_timestamp(%s)
+                    WHERE user_id = %s AND schema_path = %s
+                    RETURNING id, user_id, schema_path, value, summary, confidence, status,
+                              extract(epoch from last_used_at), hit_count, correction_count,
+                              extract(epoch from created_at), extract(epoch from updated_at)
+                    """,
+                    (summary, PROFILE_MAX_CONFIDENCE, confidence_boost, now, user_id, schema_path),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return _profile_to_api(_profile_from_row(row)) if row else {}
+
+    with _lock:
+        item = _profiles.get(user_id, {}).get(schema_path)
+        if not item:
+            return {}
+        item.summary = summary
+        item.confidence = _clamp_confidence(item.confidence + confidence_boost, PROFILE_MAX_CONFIDENCE)
+        item.updated_at = now
+    return _profile_to_api(item)
+
+
 def mark_profiles_used(user_id: str, schema_paths: list[str]) -> None:
     if not schema_paths:
         return
@@ -206,10 +253,12 @@ def mark_profiles_used(user_id: str, schema_paths: list[str]) -> None:
                 cur.execute(
                     """
                     UPDATE user_profile
-                    SET hit_count = hit_count + 1, last_used_at = to_timestamp(%s)
+                    SET hit_count = hit_count + 1,
+                        last_used_at = to_timestamp(%s),
+                        confidence = LEAST(%s, confidence + %s)
                     WHERE user_id = %s AND schema_path = ANY(%s)
                     """,
-                    (now, user_id, schema_paths),
+                    (now, PROFILE_MAX_CONFIDENCE, PROFILE_USAGE_CONFIDENCE_BOOST, user_id, schema_paths),
                 )
             conn.commit()
         return
@@ -219,6 +268,69 @@ def mark_profiles_used(user_id: str, schema_paths: list[str]) -> None:
             if item:
                 item.hit_count += 1
                 item.last_used_at = now
+                item.confidence = _clamp_confidence(item.confidence + PROFILE_USAGE_CONFIDENCE_BOOST, PROFILE_MAX_CONFIDENCE)
+
+
+def apply_profile_decay(*, user_id: str | None = None, now: float | None = None) -> dict[str, int]:
+    now = now if now is not None else time()
+    updated = 0
+    expired = 0
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        clauses = ["status = 'active'"]
+        params: list[object] = []
+        if user_id:
+            clauses.append("user_id = %s")
+            params.append(user_id)
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT id, user_id, schema_path, value, summary, confidence, status,
+                           extract(epoch from last_used_at), hit_count, correction_count,
+                           extract(epoch from created_at), extract(epoch from updated_at)
+                    FROM user_profile
+                    WHERE {" AND ".join(clauses)}
+                    """,
+                    params,
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    profile = _profile_from_row(row)
+                    decayed = _effective_profile_confidence(profile, now)
+                    if decayed >= profile.confidence:
+                        continue
+                    status = "expired" if decayed < PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE else "active"
+                    cur.execute(
+                        """
+                        UPDATE user_profile
+                        SET confidence = %s, status = %s, updated_at = to_timestamp(%s)
+                        WHERE id = %s
+                        """,
+                        (decayed, status, now, profile.id),
+                    )
+                    updated += 1
+                    if status == "expired":
+                        expired += 1
+            conn.commit()
+        return {"updated": updated, "expired": expired}
+
+    with _lock:
+        users = [user_id] if user_id else list(_profiles.keys())
+        for current_user_id in users:
+            for item in _profiles.get(current_user_id or "", {}).values():
+                if item.status != "active":
+                    continue
+                decayed = _effective_profile_confidence(item, now)
+                if decayed >= item.confidence:
+                    continue
+                item.confidence = decayed
+                item.updated_at = now
+                updated += 1
+                if decayed < PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE:
+                    item.status = "expired"
+                    expired += 1
+    return {"updated": updated, "expired": expired}
 
 
 def _ensure_postgres_schema() -> None:
@@ -294,6 +406,7 @@ def _profile_from_row(row: tuple) -> UserProfile:
 
 def _profile_to_api(profile: UserProfile) -> dict[str, object]:
     item = asdict(profile)
+    item["confidence"] = _effective_profile_confidence(profile)
     item["userId"] = item.pop("user_id")
     item["schemaPath"] = item.pop("schema_path")
     item["lastUsedAt"] = item.pop("last_used_at")
@@ -309,5 +422,16 @@ def _profile_to_api(profile: UserProfile) -> dict[str, object]:
     return item
 
 
-def _clamp_confidence(value: float) -> float:
-    return round(min(1.0, max(0.0, float(value))), 4)
+def _effective_profile_confidence(profile: UserProfile, now: float | None = None) -> float:
+    reference = profile.last_used_at or profile.updated_at or profile.created_at
+    if not reference:
+        return _clamp_confidence(profile.confidence)
+    elapsed = max(0.0, (now if now is not None else time()) - reference)
+    months_unused = int(elapsed // PROFILE_DECAY_INTERVAL_SECONDS)
+    if months_unused <= 0:
+        return _clamp_confidence(profile.confidence)
+    return _clamp_confidence(profile.confidence - months_unused * PROFILE_MONTHLY_DECAY)
+
+
+def _clamp_confidence(value: float, upper: float = 1.0) -> float:
+    return round(min(upper, max(0.0, float(value))), 4)

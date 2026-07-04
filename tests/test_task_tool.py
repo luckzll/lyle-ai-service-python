@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from app.tools import task_tool
-from app.tools.operation_confirmation import _idempotency_key, _normalise_tool_result
+from app.tools.operation_confirmation import _idempotency_key, _normalise_tool_result, confirm_pending_operation
 from app.tools.task_tool import _extract_cn_datetime, extract_candidate_tasks, preview_todo_from_question
 
 
@@ -90,3 +90,99 @@ def test_tool_result_normalises_legacy_task_result():
     assert result["retryable"] is False
     assert result["userMessage"] == "已创建待办：提交周报"
     assert result["result"] == {"todo": {"id": 1}}
+
+
+def test_confirmed_pending_operation_replays_without_duplicate_execution(monkeypatch):
+    executed = {"count": 0}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr("app.tools.operation_confirmation._ensure_pending_operation_schema", lambda: None)
+    monkeypatch.setattr("app.tools.operation_confirmation.postgres_connection", lambda: FakeConnection())
+    monkeypatch.setattr(
+        "app.tools.operation_confirmation._get_operation_for_update",
+        lambda conn, user_id, operation_id: {
+            "id": operation_id,
+            "toolName": "todo",
+            "operationType": "todo.create",
+            "riskLevel": "write",
+            "status": "confirmed",
+            "result": {
+                "ok": True,
+                "tool": "todo",
+                "operationType": "todo.create",
+                "requiresConfirmation": False,
+                "content": "已创建待办：提交周报",
+                "result": {"todo": {"id": 7}},
+            },
+        },
+    )
+
+    def fake_execute(user_id, operation):
+        executed["count"] += 1
+        return {}
+
+    monkeypatch.setattr("app.tools.operation_confirmation._execute_operation", fake_execute)
+
+    result = confirm_pending_operation("u1", 12)
+
+    assert result["idempotentReplay"] is True
+    assert result["result"]["result"] == {"todo": {"id": 7}}
+    assert executed["count"] == 0
+
+
+def test_create_todo_returns_existing_duplicate(monkeypatch):
+    monkeypatch.setattr(task_tool.settings, "postgres_enabled", True)
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params):
+            class Result:
+                def fetchone(self):
+                    if "SELECT id, title" in query:
+                        now = datetime(2026, 7, 3, tzinfo=UTC)
+                        return (9, "提交周报", "open", None, "c1", now, now)
+                    raise AssertionError("duplicate should skip insert")
+
+            return Result()
+
+    monkeypatch.setattr(task_tool, "postgres_connection", lambda: FakeConnection())
+
+    result = task_tool.create_todo("u1", "c1", "提交周报")
+
+    assert result["ok"] is True
+    assert result["duplicate"] is True
+    assert result["todo"]["id"] == 9
+
+
+def test_infer_task_goal_links_matches_current_goal(monkeypatch):
+    monkeypatch.setattr(
+        task_tool,
+        "list_user_profiles",
+        lambda user_id, status="active", limit=200: [
+            {
+                "schemaPath": "goals.current_week",
+                "label": "本周目标",
+                "value": "完成产品定位文档",
+                "confidence": 0.9,
+            }
+        ],
+    )
+
+    links = task_tool.infer_task_goal_links("u1", "提交产品定位文档")
+
+    assert links
+    assert links[0]["schemaPath"] == "goals.current_week"

@@ -1,0 +1,104 @@
+from app.agents.reviewer_agent import run_reviewer_agent
+from app.core.config import settings
+
+
+def test_reviewer_blocks_answer_that_mentions_forgotten_memory(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "governance": {
+            "blockedTerms": [{
+                "value": "帽子",
+                "status": "forgotten",
+                "schemaPath": "preferences.visual.dislikes",
+            }],
+            "lowConfidenceTerms": [],
+        }
+    }
+
+    review = run_reviewer_agent("图片风格怎么做", "你不喜欢帽子，所以我会避开。", [], "", memory=memory)
+
+    assert review["approved"] is False
+    assert review["ruleBlocked"] is True
+    assert "已治理记忆" in review["reason"]
+
+
+def test_reviewer_blocks_uncautious_low_confidence_memory(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "governance": {
+            "blockedTerms": [],
+            "lowConfidenceTerms": [{
+                "value": "西瓜",
+                "status": "active",
+                "schemaPath": "preferences.food.likes",
+            }],
+        }
+    }
+
+    review = run_reviewer_agent("我喜欢什么", "你喜欢西瓜。", [], "", memory=memory)
+
+    assert review["approved"] is False
+    assert "低置信度" in review["reason"]
+
+
+def test_reviewer_allows_cautious_low_confidence_memory(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "governance": {
+            "blockedTerms": [],
+            "lowConfidenceTerms": [{
+                "value": "西瓜",
+                "status": "active",
+                "schemaPath": "preferences.food.likes",
+            }],
+        }
+    }
+
+    review = run_reviewer_agent("我喜欢什么", "你之前提到过西瓜，但我不确定这是否仍然准确。", [], "", memory=memory)
+
+    assert review["approved"] is True
+    assert review["skipped"] is True
+
+
+def test_reviewer_blocks_rag_answer_when_sufficiency_is_false_without_caveat(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "项目预算是多少？",
+        "项目预算是 100 万元。",
+        [{"title": "项目资料", "chunk": "资料只描述了项目目标，没有预算信息。"}],
+        "",
+        rag_sufficiency={"sufficient": False, "reason": "资料不足", "score": 0.2},
+    )
+
+    assert review["approved"] is False
+    assert "资料不足" in review["reason"]
+
+
+def test_reviewer_allows_rag_answer_that_admits_insufficient_evidence(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "项目预算是多少？",
+        "当前资料不足，无法确认项目预算。",
+        [{"title": "项目资料", "chunk": "资料只描述了项目目标，没有预算信息。"}],
+        "",
+        rag_sufficiency={"sufficient": False, "reason": "资料不足", "score": 0.2},
+    )
+
+    assert review["approved"] is True
+
+
+def test_reviewer_blocks_document_grounding_with_low_context_overlap(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "文档讲了什么？",
+        "根据资料，火星基地将在 2030 年开放，并提供商业航班。",
+        [{"title": "海蓝星", "chunk": "海蓝星是一颗被海洋覆盖的虚构星球。"}],
+        "",
+        rag_sufficiency={"sufficient": True, "score": 0.9},
+    )
+
+    assert review["approved"] is False
+    assert "覆盖过低" in review["reason"]

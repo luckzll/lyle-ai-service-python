@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from app.memory.fragments import list_memory_fragments
 from app.memory.profile_schema import is_sensitive_path, schema_item
-from app.memory.profile_store import list_user_profiles, mark_profiles_used
+from app.memory.profile_store import PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE, list_user_profiles, mark_profiles_used
 
 
 def build_profile_memory_context(user_id: str, question: str, plan: dict[str, object], *, limit: int = 8) -> dict[str, object]:
     requested_paths = [str(item) for item in plan.get("schemaPaths") or []]
     profiles = list_user_profiles(user_id, status="active", limit=200)
+    profiles = [
+        item for item in profiles
+        if float(item.get("confidence") or 0) >= PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE
+    ]
     if requested_paths != ["*"]:
         allowed = set(requested_paths)
         profiles = [item for item in profiles if str(item.get("schemaPath")) in allowed]

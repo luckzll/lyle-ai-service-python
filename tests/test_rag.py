@@ -62,6 +62,43 @@ def test_rag_keyword_search_hits_title_terms(monkeypatch, tmp_path: Path):
     assert results[0]["hitModes"] == "keyword"
 
 
+def test_rag_context_includes_chunk_position_metadata(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "rerank_enabled", False)
+
+    document = tmp_path / "position.txt"
+    document.write_text("一、产品范围：\n聊天和记忆属于 MVP。", encoding="utf-8")
+    add_document("file-position", "kb-position", str(document))
+
+    result = retrieve_context_with_diagnostics("产品范围包含什么", ["kb-position"])
+
+    assert result["contexts"]
+    context = result["contexts"][0]
+    assert context["parentTitle"] == "一、产品范围："
+    assert context["chunkIndex"] == "1"
+    assert context["startChar"] == "0"
+
+
+def test_rag_parent_child_expands_adjacent_context(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "rerank_enabled", False)
+    monkeypatch.setattr(settings, "rag_parent_child_expand_enabled", True)
+    monkeypatch.setattr(settings, "rag_parent_child_sibling_limit", 1)
+
+    document = tmp_path / "parent-child.txt"
+    document.write_text(
+        "一、项目背景：\n海蓝星项目用于验证知识库。" + "背景资料。" * 180 + "\n\n"
+        "二、补充说明：\n验收时需要引用相邻片段。",
+        encoding="utf-8",
+    )
+    add_document("file-parent-child", "kb-parent-child", str(document))
+
+    results = search("海蓝星项目", ["kb-parent-child"], top_k=3)
+
+    assert any("parent_child" in str(item.get("hitModes")) for item in results)
+    assert any("背景资料" in item["chunk"] for item in results)
+
+
 def test_rag_hybrid_merges_vector_and_keyword_hits(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(settings, "qdrant_enabled", False)
     monkeypatch.setattr(settings, "rerank_enabled", False)
@@ -88,6 +125,35 @@ def test_rag_hybrid_merges_vector_and_keyword_hits(monkeypatch, tmp_path: Path):
     assert results
     assert set(results[0]["backend"].split(",")) == {"keyword", "qdrant"}
     assert set(results[0]["hitModes"].split(",")) == {"keyword", "vector"}
+
+
+def test_rag_diagnostics_preserves_hit_modes(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "rerank_enabled", False)
+    monkeypatch.setattr(settings, "rag_query_rewrite_enabled", False)
+    monkeypatch.setattr(settings, "rag_sufficiency_check_enabled", True)
+
+    document = tmp_path / "hybrid-debug.txt"
+    document.write_text("MVP 范围包含聊天、知识库和记忆确认。", encoding="utf-8")
+    add_document("file-hybrid-debug", "kb-hybrid-debug", str(document))
+    monkeypatch.setattr(settings, "qdrant_enabled", True)
+
+    def fake_qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int):
+        return [{
+            "doc_id": "file-hybrid-debug",
+            "title": "hybrid-debug.txt #1",
+            "chunk": "MVP 范围包含聊天、知识库和记忆确认。",
+            "score": "0.7",
+            "backend": "qdrant",
+            "hitModes": "vector",
+        }]
+
+    monkeypatch.setattr("app.rag.store._qdrant_search", fake_qdrant_search)
+
+    result = retrieve_context_with_diagnostics("MVP 范围包含什么", ["kb-hybrid-debug"])
+
+    assert result["contexts"]
+    assert set(result["contexts"][0]["hitModes"].split(",")) == {"keyword", "vector"}
 
 
 def test_query_rewrite_rule_fallback(monkeypatch):

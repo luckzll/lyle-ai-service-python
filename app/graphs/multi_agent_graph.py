@@ -275,12 +275,22 @@ def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
 
 def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
-    review = run_reviewer_agent(
-        state["question"],
-        state["answer"],
-        state["contexts"],
-        state["memory_context"],
-    )
+    try:
+        review = run_reviewer_agent(
+            state["question"],
+            state["answer"],
+            state["contexts"],
+            state["memory_context"],
+            memory=state["memory"],
+            rag_sufficiency=state["rag_sufficiency"],
+        )
+    except TypeError:
+        review = run_reviewer_agent(
+            state["question"],
+            state["answer"],
+            state["contexts"],
+            state["memory_context"],
+        )
     return {
         **state,
         "review": review,

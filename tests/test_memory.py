@@ -1,5 +1,6 @@
 from app.core.config import settings
 from app.memory import store as memory_store
+from app.memory import profile_store
 from app.memory.store import (
     delete_structured_memory,
     export_memory,
@@ -13,6 +14,7 @@ from app.memory.store import (
 )
 from app.memory.evidence_store import list_profile_evidence
 from app.memory.profile_schema import schema_path_for_memory
+from app.memory.profile_store import get_user_profile
 
 
 def assert_candidate(result: dict[str, object], target_key: str, value: str):
@@ -96,6 +98,73 @@ def test_low_confidence_structured_memory_is_marked_cautious_in_context():
     })
 
     assert "低置信度，仅作参考" in context
+
+
+def test_uncertain_preference_creates_low_confidence_candidate(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction(
+        "uncertain-pref-user",
+        "uncertain-pref-conversation",
+        "我可能喜欢极简风格，但也不太确定。",
+        "好的，我会先轻轻记一笔。",
+    )
+
+    assert_candidate(result, "preference", "极简风格")
+    candidate = result["candidateMemories"][0]
+    assert candidate["confidence"] == 0.65
+    assert candidate["schemaPath"] == "preferences.general.likes"
+
+
+def test_clear_and_strong_preference_confidence_tiers(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    clear = remember_interaction("tier-user", "tier-conversation", "我喜欢西瓜", "记住了")
+    strong = remember_interaction("tier-user", "tier-conversation", "我非常喜欢香蕉", "记住了")
+
+    assert_candidate(clear, "food_preference", "西瓜")
+    assert clear["candidateMemories"][0]["confidence"] == 0.85
+    assert_candidate(strong, "food_preference", "香蕉")
+    assert strong["candidateMemories"][0]["confidence"] == 0.9
+
+
+def test_confirmed_candidate_boosts_but_keeps_low_confidence_tier(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    confirmed = upsert_structured_memory(
+        "confirm-boost-user",
+        "preference",
+        "极简风格",
+        source="source_ref:conversation:confirm-boost\n我可能喜欢极简风格，但也不太确定。",
+        confidence=0.65,
+        status="active",
+    )
+
+    assert confirmed["confidence"] == 0.75
+
+
+def test_repeated_memory_confidence_caps_at_high_confidence(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    item = upsert_structured_memory("repeat-cap-user", "preference", "西瓜", confidence=0.9, status="active")
+    for _ in range(5):
+        item = upsert_structured_memory("repeat-cap-user", "preference", "西瓜", confidence=0.9, status="active")
+
+    assert item["confidence"] == 0.95
 
 
 def test_duplicate_pending_structured_memory_reuses_existing_candidate(monkeypatch):
@@ -197,6 +266,108 @@ def test_confirmed_structured_memory_projects_to_profile_fragment_and_evidence(m
     assert evidence[0]["fragmentId"] == fragment["id"]
 
 
+def test_profile_summary_synthesizes_multiple_evidence_fragments(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory(
+        "synthesis-user",
+        "negative_preference",
+        "帽子",
+        source="source_ref:conversation:synthesis-1\n我不喜欢帽子",
+        confidence=0.88,
+        status="active",
+    )
+    upsert_structured_memory(
+        "synthesis-user",
+        "negative_preference",
+        "帽衫",
+        source="source_ref:conversation:synthesis-2\n我也不喜欢帽衫",
+        confidence=0.9,
+        status="active",
+    )
+
+    memory = recall_memory("synthesis-user", None, "图片风格要注意什么")
+    profile = next(item for item in memory["profiles"] if item["schemaPath"] == "preferences.visual.dislikes")
+
+    assert profile["value"] == "帽子、帽衫"
+    assert profile["summary"] == "用户在视觉形象上不喜欢帽子、帽衫。"
+    assert "视觉负向偏好：用户在视觉形象上不喜欢帽子、帽衫。" in format_memory_context(memory)
+
+
+def test_forget_request_candidate_uses_memory_control_schema(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction("forget-candidate-user", "forget-candidate-conversation", "请忘掉帽子好吗", "好的")
+
+    assert_candidate(result, "forget_request", "帽子")
+    assert result["candidateMemories"][0]["schemaPath"] == "memory_control.forget_requests"
+
+
+def test_confirmed_forget_request_marks_matching_memory_forgotten(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("forget-user", "negative_preference", "帽子", status="active")
+    before = recall_memory("forget-user", None, "图片风格要注意什么")
+    assert any(item["schemaPath"] == "preferences.visual.dislikes" for item in before["profiles"])
+
+    upsert_structured_memory("forget-user", "forget_request", "帽子", status="active")
+
+    memory = export_memory("forget-user", None)
+    assert any(item["key"] == "negative_preference" and item["status"] == "forgotten" for item in memory["structured_all"])
+    assert any(item["schemaPath"] == "preferences.visual.dislikes" and item["status"] == "forgotten" for item in memory["profiles"])
+    after = recall_memory("forget-user", None, "图片风格要注意什么")
+    assert all(item["schemaPath"] != "preferences.visual.dislikes" for item in after["profiles"])
+    assert any(item["value"] == "帽子" for item in after["governance"]["blockedTerms"])
+
+
+def test_confirmed_sensitive_request_disables_matching_profile_context(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("sensitive-user", "career", "后端开发工程师", status="active")
+    upsert_structured_memory("sensitive-user", "sensitive_info", "后端开发工程师", status="active")
+
+    memory = export_memory("sensitive-user", None)
+    assert any(item["key"] == "career" and item["status"] == "disabled" for item in memory["structured_all"])
+    assert any(item["schemaPath"] == "work.current_role" and item["status"] == "disabled" for item in memory["profiles"])
+    context = format_memory_context(recall_memory("sensitive-user", None, "我的职业是什么"))
+    assert "后端开发工程师" not in context
+
+
+def test_sensitive_candidate_dedupes_full_sentence_fallback(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction(
+        "sensitive-dedupe-user",
+        "sensitive-dedupe-conversation",
+        "后端开发工程师这个职业信息是隐私，不要默认提。",
+        "好的",
+    )
+    sensitive_candidates = [
+        item for item in result["candidateMemories"]
+        if item.get("targetKey") == "sensitive_info"
+    ]
+
+    assert len(sensitive_candidates) == 1
+    assert sensitive_candidates[0]["value"] == "后端开发工程师这个职业信息"
+
+
 def test_recall_memory_includes_schema_aware_profile_context(monkeypatch):
     monkeypatch.setattr(settings, "redis_enabled", False)
     monkeypatch.setattr(settings, "postgres_enabled", False)
@@ -212,6 +383,74 @@ def test_recall_memory_includes_schema_aware_profile_context(monkeypatch):
     assert any(item["schemaPath"] == "work.current_role" for item in memory["profiles"])
     assert all(item["schemaPath"] != "preferences.food.likes" for item in memory["profiles"])
     assert "当前角色：产品经理方向" in context
+
+
+def test_recall_planner_selects_visual_profile_without_unrelated_food(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("visual-recall-user", "food_preference", "西瓜", status="active")
+    upsert_structured_memory("visual-recall-user", "negative_preference", "帽子", status="active")
+
+    memory = recall_memory("visual-recall-user", None, "图片风格要注意什么")
+
+    assert memory["recall_plan"]["intent"] == "visual"
+    assert any(item["schemaPath"] == "preferences.visual.dislikes" for item in memory["profiles"])
+    assert all(item["schemaPath"] != "preferences.food.likes" for item in memory["profiles"])
+
+
+def test_recall_planner_combines_project_and_communication_paths(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("planner-combo-user", "career", "产品经理方向", status="active")
+    upsert_structured_memory("planner-combo-user", "current_project", "Lyle AI", status="active")
+    upsert_structured_memory("planner-combo-user", "preferences.output_style", "清楚直接", status="active")
+
+    memory = recall_memory("planner-combo-user", None, "帮我规划产品定位文档，输出写法要清楚")
+    paths = {item["schemaPath"] for item in memory["profiles"]}
+
+    assert "project" in memory["recall_plan"]["intent"]
+    assert "communication" in memory["recall_plan"]["intent"]
+    assert {"work.current_role", "projects.current", "preferences.output_style"} <= paths
+
+
+def test_profile_recall_usage_updates_hit_count_and_confidence(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("profile-usage-user", "career", "产品经理方向", confidence=0.8, status="active")
+
+    before = get_user_profile("profile-usage-user", "work.current_role")
+    memory = recall_memory("profile-usage-user", None, "我的职业是什么")
+    after = get_user_profile("profile-usage-user", "work.current_role")
+
+    assert any(item["schemaPath"] == "work.current_role" for item in memory["profiles"])
+    assert before["hitCount"] == 0
+    assert after["hitCount"] == 1
+    assert after["confidence"] > before["confidence"]
+
+
+def test_low_effective_confidence_profile_is_not_injected(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+
+    upsert_structured_memory("profile-decay-user", "career", "过期角色", confidence=0.51, status="active")
+    profile = profile_store._profiles["profile-decay-user"]["work.current_role"]
+    profile.updated_at -= 90 * 24 * 60 * 60
+
+    memory = recall_memory("profile-decay-user", None, "我的职业是什么")
+
+    assert get_user_profile("profile-decay-user", "work.current_role")["confidence"] == 0.48
+    assert all(item["schemaPath"] != "work.current_role" for item in memory["profiles"])
 
 
 def test_manual_structured_memory_upsert_and_delete(monkeypatch):
@@ -432,6 +671,61 @@ def test_llm_structured_memory_extractor(monkeypatch):
     assert_candidate(result, "current_project", "AI智能体")
     assert all(item.get("targetKey") != "low_confidence" for item in result["candidateMemories"])
     assert memory["structured"] == []
+
+
+def test_llm_soft_preference_confidence_is_calibrated(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "llm")
+    monkeypatch.setattr(settings, "structured_memory_confidence_threshold", 0.8)
+
+    def fake_extract(question: str, recent_turns_text: str):
+        assert "大概率还是会选更克制一点的设计" in question
+        return [
+            {"key": "preference", "value": "更克制一点的设计风格", "confidence": 0.9},
+        ]
+
+    monkeypatch.setattr("app.memory.store.invoke_structured_memory_chain", fake_extract)
+
+    result = remember_interaction(
+        "llm-soft-pref-user",
+        "llm-soft-pref-conversation",
+        "我不是完全排斥活泼风格，但如果要长期使用，我大概率还是会选更克制一点的设计。",
+        "收到",
+    )
+
+    assert_candidate(result, "preference", "更克制一点的设计风格")
+    assert result["candidateMemories"][0]["confidence"] == 0.72
+
+
+def test_llm_low_confidence_candidate_is_kept_for_confirmation(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "llm")
+    monkeypatch.setattr(settings, "structured_memory_confidence_threshold", 0.8)
+
+    def fake_extract(question: str, recent_turns_text: str):
+        return [
+            {"key": "preference", "value": "低饱和配色", "confidence": 0.65},
+            {"key": "preference", "value": "模型脑补内容", "confidence": 0.55},
+        ]
+
+    monkeypatch.setattr("app.memory.store.invoke_structured_memory_chain", fake_extract)
+
+    result = remember_interaction(
+        "llm-low-pref-user",
+        "llm-low-pref-conversation",
+        "我可能会更能接受低饱和配色。",
+        "收到",
+    )
+
+    assert_candidate(result, "preference", "低饱和配色")
+    assert result["candidateMemories"][0]["confidence"] == 0.65
+    assert all(item.get("value") != "模型脑补内容" for item in result["candidateMemories"])
 
 
 def test_structured_memory_does_not_extract_questions(monkeypatch):
@@ -943,3 +1237,52 @@ def test_merge_vector_memories_can_rerank(monkeypatch):
 
     assert merged[0]["text"] == "用户使用Java开发后端"
     assert merged[0]["rerank_backend"] == "lexical"
+
+
+def test_recall_planner_uses_llm_plan_when_available(monkeypatch):
+    from app.memory.recall_planner import plan_recall
+
+    monkeypatch.setattr(settings, "recall_planner_llm_enabled", True)
+    monkeypatch.setattr("app.chains.recall_planner_chain.is_recall_planner_model_configured", lambda: True)
+    monkeypatch.setattr(
+        "app.chains.recall_planner_chain.invoke_recall_planner_chain",
+        lambda question: {
+            "schemaPaths": ["preferences.visual.likes", "memory_control.sensitive_info", "unknown.path"],
+            "reason": "用户同时询问视觉偏好和隐私边界。",
+            "intent": "visual+sensitive",
+            "confidence": 0.91,
+        },
+    )
+
+    result = plan_recall("我喜欢什么设计风格，哪些隐私不要提？")
+
+    assert result["planner"] == "llm"
+    assert result["schemaPaths"] == ["preferences.visual.likes", "memory_control.sensitive_info"]
+    assert result["confidence"] == 0.91
+
+
+def test_profile_decay_worker_marks_expired_memory(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    profile_store._profiles.clear()
+    profile_store.upsert_user_profile("decay-worker-user", "work.current_role", "过期角色", confidence=0.51)
+    profile = profile_store._profiles["decay-worker-user"]["work.current_role"]
+    profile.updated_at -= profile_store.PROFILE_DECAY_INTERVAL_SECONDS * 3
+
+    result = profile_store.apply_profile_decay(user_id="decay-worker-user")
+
+    assert result == {"updated": 1, "expired": 1}
+    assert profile_store.get_user_profile("decay-worker-user", "work.current_role")["status"] == "expired"
+
+
+def test_user_denial_marks_matching_structured_memory_conflicted(monkeypatch):
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    upsert_structured_memory("denial-user", "career", "产品经理", confidence=0.9, status="active")
+
+    remember_interaction("denial-user", "c1", "我不是产品经理了，你之前记错了。", "好的")
+
+    memory = export_memory("denial-user", None)
+    item = next(item for item in memory["structured_all"] if item["key"] == "career")
+    assert item["status"] == "conflicted"

@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.core.database import postgres_connection
 from app.tools.notification_service import list_notifications, mark_notification_read
 from app.tools.operation_confirmation import confirm_pending_operation, list_pending_operations, reject_pending_operation
-from app.tools.task_tool import create_todo
+from app.tools.task_tool import create_todo, infer_task_goal_links
 from app.tools.tool_registry import list_available_tools
 
 router = APIRouter()
@@ -112,6 +112,8 @@ def todos(user_id: str, limit: int = Query(default=50, ge=1, le=200)) -> dict[st
                 "status": row[2],
                 "dueAt": row[3].isoformat() if row[3] else None,
                 "conversationId": row[4],
+                "sourceRef": f"conversation:{row[4]}" if row[4] else "",
+                "goalLinks": infer_task_goal_links(user_id, row[1]),
                 "createdAt": row[5].isoformat(),
                 "updatedAt": row[6].isoformat(),
             }
@@ -174,6 +176,8 @@ def update_todo_due_at(user_id: str, todo_id: int, request: TodoDueAtRequest) ->
         "status": row[2],
         "dueAt": row[3].isoformat() if row[3] else None,
         "conversationId": row[4],
+        "sourceRef": f"conversation:{row[4]}" if row[4] else "",
+        "goalLinks": infer_task_goal_links(user_id, row[1]),
         "createdAt": row[5].isoformat(),
         "updatedAt": row[6].isoformat(),
     }
@@ -215,6 +219,7 @@ def calendar_events(user_id: str, limit: int = Query(default=50, ge=1, le=200)) 
                 "startsAt": row[2].isoformat() if row[2] else None,
                 "status": row[3],
                 "conversationId": row[4],
+                "sourceRef": f"conversation:{row[4]}" if row[4] else "",
                 "createdAt": row[5].isoformat(),
                 "updatedAt": row[6].isoformat(),
             }

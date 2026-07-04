@@ -3,7 +3,7 @@ from openpyxl import Workbook
 from app.core.config import settings
 from app.memory.store import export_memory
 from app.rag.store import add_document
-from app.rag.document_loader import load_document_text
+from app.rag.document_loader import load_document_text, split_text, split_text_with_metadata
 
 
 def test_load_document_text_reads_xlsx(tmp_path):
@@ -20,6 +20,31 @@ def test_load_document_text_reads_xlsx(tmp_path):
     assert title == "demo.xlsx"
     assert "工作表：用户" in text
     assert "周乐乐 | 西瓜" in text
+
+
+def test_split_text_keeps_short_paragraphs_together_and_splits_long_blocks():
+    text = "\n\n".join([
+        "一、MVP 范围：\n聊天、知识库、记忆确认都属于首期范围。",
+        "二、暂不包含：\n复杂多租户权限和计费系统。",
+        "长段：" + "持续优化RAG切片。" * 120,
+    ])
+
+    chunks = split_text(text, chunk_size=80, overlap=10)
+
+    assert any("一、MVP 范围" in chunk and "记忆确认" in chunk for chunk in chunks)
+    assert any("二、暂不包含" in chunk and "计费系统" in chunk for chunk in chunks)
+    assert len(chunks) > 3
+    assert all(len(chunk) <= 80 for chunk in chunks)
+
+
+def test_split_text_with_metadata_tracks_parent_and_offsets():
+    text = "一、MVP 范围：\n聊天、知识库、记忆确认都属于首期范围。\n\n二、暂不包含：\n计费系统。"
+
+    chunks = split_text_with_metadata(text, chunk_size=80, overlap=10)
+
+    assert chunks[0].parent_title == "一、MVP 范围："
+    assert chunks[0].start_char == 0
+    assert chunks[0].end_char > chunks[0].start_char
 
 
 def test_load_document_text_reads_xls(tmp_path):

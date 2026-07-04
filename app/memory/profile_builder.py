@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from app.memory.evidence_store import create_profile_evidence
+import re
+
+from app.memory.evidence_store import create_profile_evidence, list_profile_evidence
 from app.memory.fragments import create_memory_fragment
-from app.memory.profile_schema import schema_path_for_memory
-from app.memory.profile_store import get_user_profile, set_user_profile_status, upsert_user_profile
+from app.memory.profile_schema import is_multi_value_path, schema_path_for_memory
+from app.memory.profile_store import get_user_profile, set_user_profile_status, update_user_profile_summary, upsert_user_profile
 
 
 def build_profile_from_structured_memory(
@@ -51,6 +53,8 @@ def build_profile_from_structured_memory(
             relation=relation,
             confidence=confidence,
         )
+        if action == "upsert_profile":
+            profile = synthesize_profile_summary(user_id, profile)
     return {
         "action": action,
         "schemaPath": schema_path,
@@ -61,6 +65,24 @@ def build_profile_from_structured_memory(
         "evidence": evidence,
         "requiresUserConfirmation": action == "conflict",
     }
+
+
+def synthesize_profile_summary(user_id: str, profile: dict[str, object]) -> dict[str, object]:
+    profile_id = int(profile.get("id") or 0)
+    schema_path = str(profile.get("schemaPath") or "")
+    if not profile_id or not schema_path:
+        return profile
+    evidence = list_profile_evidence(user_id, profile_id, limit=50)
+    values = _evidence_values(evidence)
+    if not values:
+        values = _split_items(str(profile.get("value") or ""))
+    if not values:
+        return profile
+    summary = _synthesize_summary(schema_path, values)
+    if not summary:
+        return profile
+    boost = 0.02 if len(values) >= 2 else 0.0
+    return update_user_profile_summary(user_id, schema_path, summary, confidence_boost=boost) or profile
 
 
 def parse_source(source: str) -> tuple[str, str]:
@@ -78,6 +100,57 @@ def _relation_for_profile(existing: dict[str, object] | None, value: str) -> str
     if not existing_value or value in existing_value or existing_value in value:
         return "support"
     return "correction" if int(existing.get("correctionCount") or 0) > 0 else "support"
+
+
+def _evidence_values(evidence: list[dict[str, object]]) -> list[str]:
+    values: list[str] = []
+    for item in reversed(evidence):
+        if item.get("relation") != "support":
+            continue
+        fragment = item.get("fragment") if isinstance(item.get("fragment"), dict) else {}
+        values.extend(_split_items(str(fragment.get("normalizedText") or "")))
+    return _dedupe_values(values)
+
+
+def _split_items(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[、,，;；/和与]+", value or "") if item.strip()]
+
+
+def _dedupe_values(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _synthesize_summary(schema_path: str, values: list[str]) -> str:
+    joined = "、".join(values[:8])
+    if schema_path == "preferences.visual.dislikes":
+        return f"用户在视觉形象上不喜欢{joined}。"
+    if schema_path == "preferences.visual.likes":
+        return f"用户在视觉形象上偏好{joined}。"
+    if schema_path == "preferences.food.likes":
+        return f"用户喜欢{joined}。"
+    if schema_path == "preferences.food.dislikes":
+        return f"用户不喜欢{joined}。"
+    if schema_path == "preferences.entertainment.likes":
+        return f"用户的娱乐偏好包括{joined}。"
+    if schema_path == "preferences.general.likes":
+        return f"用户偏好{joined}。"
+    if schema_path == "preferences.general.dislikes":
+        return f"用户不喜欢{joined}。"
+    if schema_path == "projects.current":
+        return f"用户当前关注项目包括{joined}。" if len(values) > 1 else f"用户当前关注项目是{joined}。"
+    if schema_path.startswith("goals."):
+        return f"用户当前目标包括{joined}。" if len(values) > 1 else f"用户当前目标是{joined}。"
+    if schema_path == "work.current_role":
+        return values[-1]
+    if schema_path == "work.background":
+        return f"用户背景包括{joined}。" if is_multi_value_path(schema_path) else f"用户背景是{values[-1]}。"
+    if schema_path.startswith("memory_control."):
+        return joined
+    return joined
 
 
 def _conversation_id_from_ref(source_ref: str) -> str | None:

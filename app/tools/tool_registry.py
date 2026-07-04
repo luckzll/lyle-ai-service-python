@@ -204,6 +204,7 @@ def execute_tool(
         }
 
     elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    result = _normalise_tool_result(tool_name, result)
     result["elapsedMs"] = elapsed_ms
     audit_tool_call(
         tool_name=tool_name,
@@ -223,7 +224,7 @@ def format_tool_context(tool_results: list[dict[str, object]]) -> str:
     lines = []
     for item in tool_results:
         status = "成功" if item.get("ok") else "失败"
-        content = item.get("content")
+        content = item.get("userMessage") or item.get("content")
         if item.get("tool") == "image_generate" and item.get("ok"):
             content = "图片已成功生成，最终图片会由系统自动附加到回答末尾。回答中不要输出图片 URL 或 Markdown。"
         if item.get("tool") == "image_edit" and item.get("ok"):
@@ -285,6 +286,94 @@ def _execute_tool(
             "requiresConfirmation": True,
         }
     return {"tool": tool_name, **result}
+
+
+def _normalise_tool_result(tool_name: str, result: dict[str, object]) -> dict[str, object]:
+    risk_policy = get_tool_risk_policy(tool_name)
+    ok = bool(result.get("ok"))
+    content = str(result.get("content") or result.get("userMessage") or "")
+    operation_type = str(result.get("operationType") or _operation_type_for_tool(tool_name, result))
+    requires_confirmation = bool(result.get("requiresConfirmation", risk_policy.requires_confirmation and not ok))
+    error = result.get("error") if isinstance(result.get("error"), dict) else None
+    if not ok and error is None:
+        error = _classify_tool_error(content)
+    normalized = {
+        **result,
+        "tool": str(result.get("tool") or tool_name),
+        "ok": ok,
+        "operationType": operation_type,
+        "riskLevel": str(result.get("riskLevel") or risk_policy.risk_level),
+        "requiresConfirmation": requires_confirmation,
+        "retryable": bool(result.get("retryable", bool(error and error.get("retryable")))),
+        "userMessage": content,
+        "content": content,
+        "result": _tool_result_payload(result),
+        "error": None if ok else error,
+    }
+    return normalized
+
+
+def _operation_type_for_tool(tool_name: str, result: dict[str, object]) -> str:
+    operation = result.get("operation") if isinstance(result.get("operation"), dict) else {}
+    if operation.get("operationType"):
+        return str(operation["operationType"])
+    return {
+        "health_check": "health.check",
+        "memory_snapshot": "memory.snapshot",
+        "memory_stats": "memory.stats",
+        "web_search": "web.search",
+        "weather": "weather.read",
+        "file_parse": "file.parse",
+        "image_analyze": "image.analyze",
+        "image_generate": "image.generate",
+        "image_edit": "image.edit",
+        "todo": "todo.preview",
+        "calendar": "calendar.preview",
+        "list_tools": "tools.list",
+    }.get(tool_name, f"{tool_name}.run")
+
+
+def _tool_result_payload(result: dict[str, object]) -> dict[str, object]:
+    excluded = {
+        "tool",
+        "ok",
+        "content",
+        "operationType",
+        "riskLevel",
+        "requiresConfirmation",
+        "retryable",
+        "userMessage",
+        "result",
+        "error",
+        "elapsedMs",
+    }
+    payload = result.get("result")
+    if isinstance(payload, dict):
+        return payload
+    return {key: value for key, value in result.items() if key not in excluded}
+
+
+def _classify_tool_error(message: str) -> dict[str, object]:
+    text = message or ""
+    if any(marker in text for marker in ["没有识别", "没有找到", "请说明", "请在问题中", "未知工具", "不支持"]):
+        code, retryable = "PARAM_MISSING", False
+    elif any(marker in text for marker in ["PostgreSQL", "数据库", "SQL"]):
+        code, retryable = "DATABASE_ERROR", False
+    elif any(marker in text for marker in ["白名单", "未启用", "拒绝", "权限", "不属于当前用户"]):
+        code, retryable = "PERMISSION_DENIED", False
+    elif any(marker in text.lower() for marker in ["timeout", "timed out", "超时"]):
+        code, retryable = "TIMEOUT", True
+    elif any(marker in text for marker in ["限流", "rate limit", "429"]):
+        code, retryable = "RATE_LIMITED", True
+    elif any(marker in text for marker in ["格式", "JSON", "解析失败"]):
+        code, retryable = "MODEL_FORMAT_ERROR", True
+    else:
+        code, retryable = "UNKNOWN_ERROR", False
+    return {
+        "code": code,
+        "message": text,
+        "retryable": retryable,
+    }
 
 
 def _tool_specs() -> dict[str, ToolSpec]:

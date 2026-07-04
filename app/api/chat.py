@@ -92,6 +92,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
                 score=str(item.get("score") or ""),
                 backend=str(item.get("backend") or ""),
                 hitModes=str(item.get("hitModes") or ""),
+                chunkIndex=str(item.get("chunkIndex") or ""),
+                parentTitle=str(item.get("parentTitle") or ""),
+                startChar=str(item.get("startChar") or ""),
+                endChar=str(item.get("endChar") or ""),
             )
             for item in contexts
         ],
@@ -206,6 +210,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     answer,
                     contexts,
                     memory_context,
+                    memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                    rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
                 )
                 logger.info(
                     "chat_stream timing review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs skipped=%s approved=%s",
@@ -253,6 +259,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         answer,
                         contexts,
                         memory_context,
+                        memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                        rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
                     )
                     agent_trace.append({
                         "agent": "reviewer_agent",
@@ -278,6 +286,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                             "score": str(item.get("score") or ""),
                             "backend": str(item.get("backend") or ""),
                             "hitModes": str(item.get("hitModes") or ""),
+                            "chunkIndex": str(item.get("chunkIndex") or ""),
+                            "parentTitle": str(item.get("parentTitle") or ""),
+                            "startChar": str(item.get("startChar") or ""),
+                            "endChar": str(item.get("endChar") or ""),
                         }
                         for item in contexts
                     ],
@@ -371,6 +383,13 @@ def _writer_input_debug(
             {
                 "title": item.get("title", ""),
                 "chunkPreview": _clip(item.get("chunk", ""), 500),
+                "score": str(item.get("score") or ""),
+                "backend": str(item.get("backend") or ""),
+                "hitModes": str(item.get("hitModes") or ""),
+                "chunkIndex": str(item.get("chunkIndex") or ""),
+                "parentTitle": str(item.get("parentTitle") or ""),
+                "startChar": str(item.get("startChar") or ""),
+                "endChar": str(item.get("endChar") or ""),
             }
             for item in contexts[:5]
         ],

@@ -17,6 +17,10 @@ class Source(BaseModel):
     score: str = ""
     backend: str = ""
     hit_modes: str = Field(default="", alias="hitModes")
+    chunk_index: str = Field(default="", alias="chunkIndex")
+    parent_title: str = Field(default="", alias="parentTitle")
+    start_char: str = Field(default="", alias="startChar")
+    end_char: str = Field(default="", alias="endChar")
 
 
 class Usage(BaseModel):

@@ -29,6 +29,15 @@ class StorageObjectRef:
     visibility: str | None = None
 
 
+@dataclass(frozen=True)
+class TextChunk:
+    text: str
+    index: int
+    parent_title: str
+    start_char: int
+    end_char: int
+
+
 def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
     ref = storage_path if isinstance(storage_path, StorageObjectRef) else StorageObjectRef(storage_path=storage_path)
     path = _resolve_storage_path(ref)
@@ -63,20 +72,124 @@ def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
 
 
 def split_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str]:
-    normalized = "\n".join(line.strip() for line in text.splitlines() if line.strip())
-    if not normalized:
-        return ["文档内容为空。"]
+    return [item.text for item in split_text_with_metadata(text, chunk_size, overlap)]
 
-    chunks: list[str] = []
-    start = 0
-    while start < len(normalized):
-        end = min(start + chunk_size, len(normalized))
-        chunks.append(normalized[start:end])
-        if end == len(normalized):
-            break
-        start = max(end - overlap, start + 1)
+
+def split_text_with_metadata(text: str, chunk_size: int = 800, overlap: int = 120) -> list[TextChunk]:
+    blocks = _semantic_blocks(text)
+    if not blocks:
+        return [TextChunk("文档内容为空。", 1, "文档内容", 0, 0)]
+
+    chunks: list[TextChunk] = []
+    current = ""
+    current_title = ""
+    current_start = 0
+    for block in blocks:
+        block_text = str(block["text"])
+        block_title = str(block["heading"] or "")
+        block_start = int(block["start"])
+        if len(block_text) > chunk_size:
+            if current:
+                chunks.append(_chunk(current, len(chunks) + 1, current_title, current_start))
+                current = ""
+            chunks.extend(_window_split(block_text, chunk_size, overlap, len(chunks), block_title, block_start))
+            continue
+        candidate = f"{current}\n{block_text}".strip() if current else block_text
+        if len(candidate) <= chunk_size:
+            if not current:
+                current_start = block_start
+                current_title = block_title
+            current = candidate
+            current_title = current_title or block_title
+            continue
+        if current:
+            chunks.append(_chunk(current, len(chunks) + 1, current_title, current_start))
+        current = block_text
+        current_title = block_title
+        current_start = block_start
+    if current:
+        chunks.append(_chunk(current, len(chunks) + 1, current_title, current_start))
 
     return chunks
+
+
+def _semantic_blocks(text: str) -> list[dict[str, object]]:
+    paragraphs: list[dict[str, object]] = []
+    current: list[str] = []
+    current_start = 0
+    current_heading = ""
+    active_heading = ""
+    cursor = 0
+    for raw_line in text.splitlines(keepends=True):
+        line = raw_line.strip()
+        if not line:
+            if current:
+                paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
+                current = []
+                current_heading = active_heading
+            cursor += len(raw_line)
+            continue
+        if _looks_like_heading(line) and current:
+            paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
+            current = [line]
+            current_start = cursor
+            current_heading = line
+            active_heading = line
+            cursor += len(raw_line)
+            continue
+        if not current:
+            current_start = cursor
+            current_heading = active_heading
+        if _looks_like_heading(line):
+            active_heading = line
+            current_heading = line
+        current.append(line)
+        cursor += len(raw_line)
+    if current:
+        paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
+    return [item for item in paragraphs if str(item["text"]).strip()]
+
+
+def _looks_like_heading(line: str) -> bool:
+    if len(line) > 80:
+        return False
+    heading_prefixes = ("#", "第", "一、", "二、", "三、", "四、", "五、", "1.", "2.", "3.", "4.", "5.")
+    return line.startswith(heading_prefixes) or line.endswith(("：", ":"))
+
+
+def _window_split(
+    text: str,
+    chunk_size: int,
+    overlap: int,
+    existing_count: int = 0,
+    parent_title: str = "",
+    base_start: int = 0,
+) -> list[TextChunk]:
+    chunks: list[TextChunk] = []
+    start = 0
+    while start < len(text):
+        end = min(start + chunk_size, len(text))
+        chunks.append(TextChunk(
+            text=text[start:end],
+            index=existing_count + len(chunks) + 1,
+            parent_title=parent_title or "长段落",
+            start_char=base_start + start,
+            end_char=base_start + end,
+        ))
+        if end == len(text):
+            break
+        start = max(end - overlap, start + 1)
+    return chunks
+
+
+def _chunk(text: str, index: int, parent_title: str, start_char: int) -> TextChunk:
+    return TextChunk(
+        text=text,
+        index=index,
+        parent_title=parent_title or "文档内容",
+        start_char=start_char,
+        end_char=start_char + len(text),
+    )
 
 
 def _resolve_storage_path(ref: StorageObjectRef) -> Path:

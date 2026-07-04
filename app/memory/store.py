@@ -122,6 +122,7 @@ def recall_memory(
         "profile_context": profile_context,
         "profiles": profile_context.get("profiles") or [],
         "fragments": profile_context.get("fragments") or [],
+        "governance": _memory_governance_snapshot(user_id),
         "short_term": [asdict(item) for item in short],
         "structured": [asdict(item) for item in structured],
         "semantic": semantic,
@@ -215,6 +216,7 @@ def compress_memory(user_id: str, conversation_id: str | None) -> None:
 
 
 def extract_structured_memory(user_id: str, conversation_id: str | None, text: str) -> list[dict[str, object]]:
+    _apply_structured_memory_denials(user_id, text)
     candidates = _extract_structured_candidates(
         text,
         _load_short_term(user_id, conversation_id),
@@ -238,6 +240,59 @@ def extract_structured_memory(user_id: str, conversation_id: str | None, text: s
         item["schemaPath"] = schema_path_for_memory(key, value)
         candidate_memories.append(item)
     return candidate_memories
+
+
+def _apply_structured_memory_denials(user_id: str, text: str) -> list[dict[str, object]]:
+    if not _looks_like_memory_denial(text):
+        return []
+    changed: list[dict[str, object]] = []
+    for item in _load_all_structured(user_id):
+        if item.status != "active" or item.key.startswith("pending:"):
+            continue
+        if schema_path_for_memory(item.key, item.value).startswith("memory_control."):
+            continue
+        if not _denies_structured_memory_value(text, item.value):
+            continue
+        updated = set_structured_memory_status(user_id, item.key, "conflicted")
+        if updated:
+            changed.append(updated)
+    return changed
+
+
+def _looks_like_memory_denial(text: str) -> bool:
+    return any(marker in text for marker in ["不是", "不再", "已经不", "没有", "别再", "不要再", "记错", "不准确", "错了", "不是这样的"])
+
+
+def _denies_structured_memory_value(text: str, value: str) -> bool:
+    value_terms = _denial_terms(value)
+    if not value_terms:
+        return False
+    if not any(term in text for term in value_terms):
+        return False
+    compact = re.sub(r"\s+", "", text)
+    return any(pattern in compact for pattern in [
+        "不是",
+        "不再",
+        "已经不",
+        "没有",
+        "不要再",
+        "别再",
+        "记错",
+        "不准确",
+        "错了",
+    ])
+
+
+def _denial_terms(value: str) -> set[str]:
+    compact = re.sub(r"[\s，。,.!！?？：:、\"'“”‘’（）()\[\]【】]", "", value)
+    terms = {compact} if len(compact) >= 2 else set()
+    terms.update(item for item in _split_structured_multi_value(value) if len(item) >= 2)
+    terms.update(
+        value[index:index + 2]
+        for index in range(max(len(value) - 1, 0))
+        if re.fullmatch(r"[\u4e00-\u9fff]{2}", value[index:index + 2])
+    )
+    return {term for term in terms if term}
 
 
 def format_memory_context(memory: dict[str, object]) -> str:
@@ -457,6 +512,12 @@ def _normalise_score(value: object) -> float:
         return 0.0
 
 
+STRUCTURED_MEMORY_MIN_SAVE_CONFIDENCE = 0.6
+STRUCTURED_MEMORY_LOW_CONFIDENCE_MAX = 0.75
+STRUCTURED_MEMORY_HIGH_CONFIDENCE_MIN = 0.85
+STRUCTURED_MEMORY_MAX_CONFIDENCE = 0.95
+
+
 def upsert_structured_memory(
     user_id: str,
     key: str,
@@ -478,6 +539,7 @@ def upsert_structured_memory(
     if existing and value != original_value and conflict_action == "replaced":
         conflict_action = "merged"
     confidence = _adjust_structured_confidence(existing, confidence, status, conflict_action)
+    confidence = _adjust_structured_confidence_for_confirmation(key, source, confidence, status, existing)
     if conflict_action == "ignored":
         _record_structured_memory_history(
             user_id,
@@ -1010,19 +1072,41 @@ def _adjust_structured_confidence(
     if not existing:
         return base
     if status == "active" and action == "refreshed":
-        return _clamp_confidence(max(existing.confidence, base) + 0.05)
+        return _clamp_confidence(max(existing.confidence, base) + 0.05, STRUCTURED_MEMORY_MAX_CONFIDENCE)
     if status == "active" and action == "reactivated":
-        return _clamp_confidence(max(existing.confidence, base) + 0.03)
+        return _clamp_confidence(max(existing.confidence, base) + 0.03, STRUCTURED_MEMORY_MAX_CONFIDENCE)
     if status == "active" and action in {"replaced", "merged"}:
         return _clamp_confidence(max(base, 0.7))
     return base
+
+
+def _adjust_structured_confidence_for_confirmation(
+    key: str,
+    source: str,
+    confidence: float,
+    status: str,
+    existing: StructuredMemory | None,
+) -> float:
+    if existing or status != "active" or key.startswith("pending:"):
+        return confidence
+    if not _looks_like_user_confirmed_source(source):
+        return confidence
+    schema_path = schema_path_for_memory(key, "")
+    if schema_path.startswith("memory_control."):
+        return min(confidence, STRUCTURED_MEMORY_HIGH_CONFIDENCE_MIN)
+    boost = 0.1 if confidence < STRUCTURED_MEMORY_LOW_CONFIDENCE_MAX else 0.15
+    return _clamp_confidence(confidence + boost, STRUCTURED_MEMORY_MAX_CONFIDENCE)
+
+
+def _looks_like_user_confirmed_source(source: str) -> bool:
+    return source.startswith("source_ref:conversation:") or source == "chat_candidate"
 
 
 def _status_adjusted_confidence(existing: StructuredMemory | None, status: str) -> float:
     if not existing:
         return 1.0
     if status == "active":
-        return _clamp_confidence(existing.confidence + 0.03)
+        return _clamp_confidence(existing.confidence + 0.03, STRUCTURED_MEMORY_MAX_CONFIDENCE)
     if status == "disabled":
         return _clamp_confidence(existing.confidence - 0.15)
     if status == "expired":
@@ -1030,8 +1114,8 @@ def _status_adjusted_confidence(existing: StructuredMemory | None, status: str) 
     return _clamp_confidence(existing.confidence)
 
 
-def _clamp_confidence(value: float) -> float:
-    return round(min(1.0, max(0.0, float(value))), 4)
+def _clamp_confidence(value: float, upper: float = 1.0) -> float:
+    return round(min(upper, max(0.0, float(value))), 4)
 
 
 _MULTI_VALUE_STRUCTURED_KEYS = {
@@ -1410,6 +1494,9 @@ def _milvus_client():
 
 
 def _extract_structured_candidates(text: str, recent_turns: list[MemoryTurn] | None = None) -> list[tuple[str, str, float]]:
+    control_candidates = _extract_memory_control_candidates(text)
+    if control_candidates:
+        return _dedupe_structured_candidates(control_candidates)
     if _is_question_like_text(text):
         return []
     if _is_task_commitment_text(text):
@@ -1426,15 +1513,47 @@ def _extract_structured_candidates(text: str, recent_turns: list[MemoryTurn] | N
     if mode in {"llm", "hybrid"}:
         candidates.extend(_extract_structured_candidates_by_llm(text, recent_turns or []))
 
+    return _dedupe_structured_candidates(candidates)
+
+
+def _dedupe_structured_candidates(candidates: list[tuple[str, str, float]]) -> list[tuple[str, str, float]]:
     deduped: dict[str, tuple[str, float]] = {}
     for key, value, confidence in candidates:
         normalised = _normalise_structured_candidate(key, value)
         if normalised:
             normalised_key, normalised_value = normalised
             existing = deduped.get(normalised_key)
-            if existing is None or confidence >= existing[1]:
+            if existing is None or _prefer_structured_candidate(normalised_value, confidence, existing[0], existing[1]):
                 deduped[normalised_key] = (normalised_value, confidence)
     return [(key, value, confidence) for key, (value, confidence) in deduped.items()]
+
+
+def _prefer_structured_candidate(value: str, confidence: float, existing_value: str, existing_confidence: float) -> bool:
+    value_key = _normalise_candidate_text_for_compare(value)
+    existing_key = _normalise_candidate_text_for_compare(existing_value)
+    if value_key and existing_key and (value_key in existing_key or existing_key in value_key):
+        if len(value_key) != len(existing_key):
+            return len(value_key) < len(existing_key)
+    return confidence >= existing_confidence
+
+
+def _normalise_candidate_text_for_compare(value: str) -> str:
+    return re.sub(r"[\s，。,.!！?？：:、\"'“”‘’（）()\[\]【】]", "", value)
+
+
+def _calibrate_structured_confidence(key: str, confidence: float, source_text: str) -> float:
+    schema_path = schema_path_for_memory(key, "")
+    if not schema_path.startswith("memory_control.") and not _looks_like_direct_user_memory_statement(source_text):
+        confidence = min(confidence, 0.7)
+    if not schema_path.startswith("preferences."):
+        return confidence
+    if _looks_like_uncertain_preference_text(source_text):
+        return min(confidence, 0.65)
+    if _looks_like_soft_preference_text(source_text):
+        return min(confidence, 0.72)
+    if _looks_like_strong_preference_text(source_text):
+        return max(confidence, 0.9)
+    return min(confidence, STRUCTURED_MEMORY_HIGH_CONFIDENCE_MIN)
 
 
 def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, float]]:
@@ -1442,11 +1561,33 @@ def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, fl
     if _is_question_like_text(text):
         return []
 
+    control_candidates = _extract_memory_control_candidates(text)
+    if control_candidates:
+        return control_candidates
+
     intro_match = re.search(r"我是([^，。,.!\n]{1,16})喜欢([^，。,.!\n]{1,64})", text)
     if intro_match:
         candidates.append(("name", intro_match.group(1).strip(), 0.85))
         value = intro_match.group(2).strip()
         candidates.append((_preference_key_for_value(value), value, 0.85))
+
+    strong_preference_patterns = [
+        r"我(?:非常|特别|很|超|最|一直|明确|肯定)(?:都|会)?喜欢([^，。,.!\n]{1,64})",
+        r"我喜欢([^，。,.!\n]{1,64})(?:很久了|好多年了|一直没变)",
+    ]
+    for pattern in strong_preference_patterns:
+        for match in re.finditer(pattern, text):
+            value = match.group(1).strip()
+            candidates.append((_preference_key_for_value(value), value, 0.9))
+
+    uncertain_preference_patterns = [
+        r"我(?:可能|也许|大概|有点|似乎)(?:会)?喜欢([^，。,.!\n]{1,64}?)(?:，?但(?:也)?不太确定|但不确定|不过(?:也)?不太确定|。|$)",
+        r"我喜欢([^，。,.!\n]{1,64}?)(?:，?但(?:也)?不太确定|但不确定|不过(?:也)?不太确定)",
+    ]
+    for pattern in uncertain_preference_patterns:
+        for match in re.finditer(pattern, text):
+            value = match.group(1).strip()
+            candidates.append((_preference_key_for_value(value), value, 0.65))
 
     career_patterns = [
         r"我的(?:职业|工作|岗位)是([^，。,.!\n]{1,64})",
@@ -1487,17 +1628,34 @@ def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, fl
                 continue
             elif fixed_key == "preference":
                 value = match.group(1).strip()
-                candidates.append((_preference_key_for_value(value), value, 0.85))
+                confidence = 0.65 if _looks_like_uncertain_preference_text(text) else 0.85
+                candidates.append((_preference_key_for_value(value), value, confidence))
             elif fixed_key == "negative_preference":
                 value = match.group(1).strip()
                 candidates.append((_negative_preference_key_for_value(value), value, 0.9))
             else:
                 candidates.append((fixed_key, match.group(1).strip(), 0.85))
     return [
-        (key, value, confidence)
+        (key, value, _calibrate_structured_confidence(key, confidence, text))
         for key, value, confidence in candidates
         if _is_valid_structured_candidate(key, value)
     ]
+
+
+def _looks_like_uncertain_preference_text(text: str) -> bool:
+    return any(marker in text for marker in ["可能", "也许", "大概喜欢", "大概会喜欢", "似乎", "不太确定", "不确定"])
+
+
+def _looks_like_soft_preference_text(text: str) -> bool:
+    return any(marker in text for marker in ["大概率", "倾向", "更能接受", "更愿意", "通常会", "不完全", "不是完全", "不排斥"])
+
+
+def _looks_like_strong_preference_text(text: str) -> bool:
+    return any(marker in text for marker in ["非常喜欢", "特别喜欢", "很喜欢", "超喜欢", "最喜欢", "一直喜欢", "明确喜欢", "肯定喜欢"])
+
+
+def _looks_like_direct_user_memory_statement(text: str) -> bool:
+    return any(marker in text for marker in ["我", "我的", "自己", "本人", "以后帮我", "可以默认我", "最近在做", "正在做"])
 
 
 def _extract_structured_candidates_by_llm(text: str, recent_turns: list[MemoryTurn]) -> list[tuple[str, str, float]]:
@@ -1512,13 +1670,15 @@ def _extract_structured_candidates_by_llm(text: str, recent_turns: list[MemoryTu
     candidates: list[tuple[str, str, float]] = []
     for item in memories:
         confidence = float(item.get("confidence") or 0)
-        if confidence < settings.structured_memory_confidence_threshold:
+        if confidence < STRUCTURED_MEMORY_MIN_SAVE_CONFIDENCE:
             continue
         key = str(item.get("key") or "").strip()
         value = str(item.get("value") or "").strip()
         normalised = _normalise_structured_candidate(key, value)
         if normalised:
-            candidates.append((*normalised, confidence))
+            normalised_key, normalised_value = normalised
+            confidence = _calibrate_structured_confidence(normalised_key, confidence, text)
+            candidates.append((normalised_key, normalised_value, confidence))
     return candidates
 
 
@@ -1628,7 +1788,51 @@ def _normalise_structured_key(key: str) -> str:
         "动物偏好": "pet_preference",
         "运动偏好": "sport_preference",
         "娱乐偏好": "entertainment_preference",
+        "遗忘请求": "forget_request",
+        "忘记": "forget_request",
+        "删除记忆": "forget_request",
+        "敏感信息": "sensitive_info",
+        "隐私": "sensitive_info",
     }.get(cleaned, cleaned)
+
+
+def _extract_memory_control_candidates(text: str) -> list[tuple[str, str, float]]:
+    candidates: list[tuple[str, str, float]] = []
+    forget_patterns = [
+        r"(?:请)?(?:忘掉|忘记|别记|不要记|别保存|不要保存|删除记忆)(?:一下|这个|这件事|关于|掉)?[：:\s]*([^，。,.!\n]{1,80})",
+        r"([^，。,.!\n]{1,80})(?:这件事|这个)?(?:别记|不要记|别保存|不要保存)",
+    ]
+    sensitive_patterns = [
+        r"(?:这个|这件事|以下内容|关于)?(?:比较隐私|很隐私|是隐私|比较敏感|很敏感|是敏感信息)[：:\s]*([^，。,.!\n]{0,100})",
+        r"([^，。,.!\n]{1,100})(?:比较隐私|很隐私|是隐私|比较敏感|很敏感|是敏感信息)",
+    ]
+    for pattern in forget_patterns:
+        for match in re.finditer(pattern, text):
+            value = _clean_memory_control_value(match.group(1), text)
+            if value:
+                candidates.append(("forget_request", value, 0.95))
+    for pattern in sensitive_patterns:
+        for match in re.finditer(pattern, text):
+            value = _clean_memory_control_value(match.group(1), text)
+            if value:
+                candidates.append(("sensitive_info", value, 0.9))
+    return candidates
+
+
+def _clean_memory_control_value(value: str, fallback: str) -> str:
+    cleaned = (value or "").strip(" ：:，,。.!！？? \t\r\n")
+    if cleaned in {"这个", "这件事", "一下", "关于"}:
+        cleaned = ""
+    if not cleaned:
+        cleaned = fallback.strip(" ：:，,。.!！？? \t\r\n")
+    cleaned = re.split(r"(?:比较隐私|很隐私|是隐私|比较敏感|很敏感|是敏感信息)", cleaned, maxsplit=1)[0].strip(" ：:，,。.!！？? \t\r\n") or cleaned
+    for prefix in ["关于", "这个", "这件事", "一下"]:
+        if cleaned.startswith(prefix):
+            cleaned = cleaned.removeprefix(prefix).strip(" ：:，,。.")
+    for suffix in ["好吗", "吗", "呢", "吧"]:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned.removesuffix(suffix).strip(" ：:，,。.")
+    return cleaned[:120]
 
 
 def _find_pending_structured_memory(user_id: str, target_key: str, value: str) -> StructuredMemory | None:
@@ -1693,6 +1897,7 @@ def _sync_active_structured_memory_to_profile(
 ) -> None:
     try:
         build_profile_from_structured_memory(user_id, key, value, source, confidence)
+        _apply_memory_control_request(user_id, key, value)
     except Exception:
         logger.exception("V2 profile sync failed. user_id=%s key=%s", user_id, key)
 
@@ -1710,9 +1915,131 @@ def _sync_structured_status_to_profile(user_id: str, key: str, value: str, statu
         logger.exception("V2 profile status sync failed. user_id=%s key=%s status=%s", user_id, key, status)
 
 
+def _apply_memory_control_request(user_id: str, key: str, value: str) -> None:
+    schema_path = schema_path_for_memory(key, value)
+    if schema_path == "memory_control.forget_requests":
+        _apply_memory_value_status(user_id, value, "forgotten")
+    elif schema_path == "memory_control.sensitive_info":
+        _apply_memory_value_status(user_id, value, "disabled")
+
+
+def _apply_memory_value_status(user_id: str, target: str, status: str) -> None:
+    target = target.strip()
+    if not target:
+        return
+    for item in _load_all_structured(user_id):
+        if item.key.startswith("pending:") or schema_path_for_memory(item.key, item.value).startswith("memory_control."):
+            continue
+        if item.status == status:
+            continue
+        if _memory_text_matches(target, [item.key, item.value, item.source]):
+            set_structured_memory_status(user_id, item.key, status)
+
+    for profile in list_user_profiles(user_id, limit=500):
+        schema_path = str(profile.get("schemaPath") or "")
+        if schema_path.startswith("memory_control.") or profile.get("status") == status:
+            continue
+        if _memory_text_matches(target, [schema_path, str(profile.get("value") or ""), str(profile.get("summary") or "")]):
+            set_user_profile_status(user_id, schema_path, status)
+
+    for fragment in list_memory_fragments(user_id, limit=500):
+        if str(fragment.get("category") or "").startswith("memory_control.") or fragment.get("status") == status:
+            continue
+        if _memory_text_matches(
+            target,
+            [
+                str(fragment.get("category") or ""),
+                str(fragment.get("normalizedText") or ""),
+                str(fragment.get("sourceText") or ""),
+            ],
+        ):
+            set_memory_fragment_status(user_id, int(fragment["id"]), status)
+
+
+def _memory_text_matches(target: str, candidates: list[str]) -> bool:
+    normalized_target = _normalise_match_text(target)
+    if not normalized_target:
+        return False
+    for candidate in candidates:
+        normalized_candidate = _normalise_match_text(candidate)
+        if not normalized_candidate:
+            continue
+        if normalized_target in normalized_candidate or normalized_candidate in normalized_target:
+            return True
+    return False
+
+
+def _normalise_match_text(value: str) -> str:
+    return re.sub(r"[\s：:，,。.!！？?、；;\"'“”]+", "", value or "").lower()
+
+
+def _memory_governance_snapshot(user_id: str) -> dict[str, object]:
+    blocked_terms: list[dict[str, object]] = []
+    low_confidence_terms: list[dict[str, object]] = []
+    seen_blocked: set[str] = set()
+    seen_low: set[str] = set()
+
+    for item in _load_all_structured(user_id):
+        schema_path = schema_path_for_memory(item.key, item.value)
+        if schema_path.startswith("memory_control."):
+            if item.status == "active" and item.value:
+                _append_unique_governance_term(
+                    blocked_terms,
+                    seen_blocked,
+                    item.value,
+                    item.status,
+                    schema_path,
+                    "structured",
+                )
+            continue
+        if item.status in {"disabled", "forgotten"}:
+            _append_unique_governance_term(blocked_terms, seen_blocked, item.value, item.status, schema_path, "structured")
+        elif item.status == "active" and item.confidence < 0.75:
+            _append_unique_governance_term(low_confidence_terms, seen_low, item.value, item.status, schema_path, "structured")
+
+    for profile in list_user_profiles(user_id, limit=500):
+        schema_path = str(profile.get("schemaPath") or "")
+        value = str(profile.get("value") or profile.get("summary") or "")
+        status = str(profile.get("status") or "")
+        confidence = float(profile.get("confidence") or 1.0)
+        if schema_path.startswith("memory_control."):
+            if status == "active":
+                _append_unique_governance_term(blocked_terms, seen_blocked, value, status, schema_path, "profile")
+            continue
+        if status in {"disabled", "forgotten"}:
+            _append_unique_governance_term(blocked_terms, seen_blocked, value, status, schema_path, "profile")
+        elif status == "active" and confidence < 0.75:
+            _append_unique_governance_term(low_confidence_terms, seen_low, value, status, schema_path, "profile")
+
+    return {
+        "blockedTerms": blocked_terms[:50],
+        "lowConfidenceTerms": low_confidence_terms[:50],
+    }
+
+
+def _append_unique_governance_term(
+    items: list[dict[str, object]],
+    seen: set[str],
+    value: str,
+    status: str,
+    schema_path: str,
+    source: str,
+) -> None:
+    normalized = _normalise_match_text(value)
+    if len(normalized) < 2 or normalized in seen:
+        return
+    seen.add(normalized)
+    items.append({
+        "value": value,
+        "status": status,
+        "schemaPath": schema_path,
+        "source": source,
+    })
+
+
 def _normalise_memory_status(status: str) -> str:
     value = (status or "active").strip().lower()
-    return value if value in {"active", "pending", "disabled", "forgotten", "expired"} else "active"
+    return value if value in {"active", "pending", "disabled", "forgotten", "expired", "conflicted"} else "active"
 
 
 def _pending_structured_memory_key(
@@ -1732,6 +2059,7 @@ def _select_structured_memories(items: list[StructuredMemory], question: str) ->
             item for item in items
             if item.status == "active"
             and (item.expires_at is None or item.expires_at > time())
+            and not schema_path_for_memory(item.key, item.value).startswith("memory_control.")
         ],
         key=lambda item: item.updated_at,
         reverse=True,

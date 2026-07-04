@@ -21,6 +21,7 @@ from app.core.logging_config import configure_logging
 from app.core.metrics import metrics_middleware
 from app.core.rate_limit import rate_limit_middleware
 from app.core.security import internal_token_is_insecure, internal_token_middleware
+from app.workers.memory_decay_worker import run_memory_decay_worker
 from app.workers.notification_worker import run_notification_worker
 
 configure_logging()
@@ -46,14 +47,19 @@ async def lifespan(app: FastAPI):
         )
     stop_event = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
+    memory_decay_task: asyncio.Task[None] | None = None
     if settings.notification_worker_enabled:
         notification_task = asyncio.create_task(run_notification_worker(stop_event))
+    if settings.memory_decay_worker_enabled:
+        memory_decay_task = asyncio.create_task(run_memory_decay_worker(stop_event))
     try:
         yield
     finally:
         stop_event.set()
         if notification_task is not None:
             await notification_task
+        if memory_decay_task is not None:
+            await memory_decay_task
     close_postgres_pool()
     logger.info("Python AI service stopped.")
 

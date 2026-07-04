@@ -70,6 +70,11 @@ def test_execute_tool_respects_allowed_tool_names(monkeypatch):
 
     assert result["ok"] is False
     assert "白名单" in result["content"]
+    assert result["operationType"] == "memory.snapshot"
+    assert result["riskLevel"] == "read"
+    assert result["retryable"] is False
+    assert result["userMessage"] == result["content"]
+    assert result["error"]["code"] == "PERMISSION_DENIED"
 
 
 def test_memory_stats_reports_postgres_disabled(monkeypatch):
@@ -82,6 +87,8 @@ def test_memory_stats_reports_postgres_disabled(monkeypatch):
 
     assert result["ok"] is False
     assert "PostgreSQL 未启用" in result["content"]
+    assert result["operationType"] == "memory.stats"
+    assert result["error"]["code"] == "DATABASE_ERROR"
 
 
 def test_web_search_requires_explicit_enablement(monkeypatch):
@@ -141,6 +148,9 @@ def test_write_tool_is_blocked_when_it_does_not_return_confirmation(monkeypatch)
     assert result["ok"] is False
     assert result["policyBlocked"] is True
     assert result["requiresConfirmation"] is True
+    assert result["operationType"] == "todo.preview"
+    assert result["riskLevel"] == "write"
+    assert result["error"]["code"] == "UNKNOWN_ERROR"
     assert "安全策略拦截" in result["content"]
 
 
@@ -156,6 +166,36 @@ def test_file_parse_tool_reads_local_text_file(monkeypatch, tmp_path):
 
     assert result["ok"] is True
     assert "hello lyle" in result["content"]
+    assert result["operationType"] == "file.parse"
+    assert result["riskLevel"] == "read"
+    assert result["error"] is None
+    assert result["result"]["file"]["title"] == "note.txt"
+
+
+def test_execute_tool_normalises_confirmation_preview(monkeypatch):
+    monkeypatch.setattr(settings, "tool_audit_enabled", False)
+    monkeypatch.setattr(settings, "tool_allowed_names", "todo")
+    monkeypatch.setattr(settings, "tool_todo_enabled", True)
+    monkeypatch.setattr("app.tools.tool_registry._todo", lambda *args: {
+        "ok": True,
+        "content": "已生成待确认操作：创建待办。用户确认后才会执行。",
+        "requiresConfirmation": True,
+        "operation": {
+            "id": 1,
+            "operationType": "todo.create",
+            "summary": "创建待办",
+            "status": "pending",
+        },
+    })
+
+    result = execute_tool("todo", "u1", "c1", "创建待办：写测试")
+
+    assert result["ok"] is True
+    assert result["operationType"] == "todo.create"
+    assert result["requiresConfirmation"] is True
+    assert result["riskLevel"] == "write"
+    assert result["userMessage"].startswith("已生成待确认操作")
+    assert result["result"]["operation"]["id"] == 1
 
 
 def test_web_search_reports_missing_api_key(monkeypatch):

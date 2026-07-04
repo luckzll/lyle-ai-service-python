@@ -105,24 +105,26 @@ def list_pending_operations(user_id: str, limit: int = 50) -> dict[str, object]:
 
 def confirm_pending_operation(user_id: str, operation_id: int) -> dict[str, object]:
     _ensure_pending_operation_schema()
-    operation = _get_operation(user_id, operation_id)
-    if operation.get("status") == "confirmed":
-        return {
-            "operation": operation,
-            "result": operation.get("result") or _tool_result(
-                ok=True,
-                tool=str(operation.get("toolName") or ""),
-                operation_type=str(operation.get("operationType") or ""),
-                user_message="该操作已经确认执行过，本次没有重复执行。",
-                result={},
-            ),
-            "idempotentReplay": True,
-        }
-    if operation.get("status") != "pending":
-        raise ValueError("待确认操作不存在或已处理。")
-    result = _execute_operation(user_id, operation)
     now = datetime.now(UTC)
     with postgres_connection() as conn:
+        operation = _get_operation_for_update(conn, user_id, operation_id)
+        if operation.get("status") == "confirmed":
+            conn.commit()
+            return {
+                "operation": operation,
+                "result": operation.get("result") or _tool_result(
+                    ok=True,
+                    tool=str(operation.get("toolName") or ""),
+                    operation_type=str(operation.get("operationType") or ""),
+                    user_message="该操作已经确认执行过，本次没有重复执行。",
+                    result={},
+                ),
+                "idempotentReplay": True,
+            }
+        if operation.get("status") != "pending":
+            conn.commit()
+            raise ValueError("待确认操作不存在或已处理。")
+        result = _execute_operation(user_id, operation)
         row = conn.execute(
             """
             UPDATE agent_pending_operation
@@ -199,6 +201,23 @@ def _get_operation(user_id: str, operation_id: int) -> dict[str, object]:
             """,
             (user_id, operation_id),
         ).fetchone()
+    if row is None:
+            raise ValueError("待确认操作不存在或已处理。")
+    return _operation_row(row)
+
+
+def _get_operation_for_update(conn, user_id: str, operation_id: int) -> dict[str, object]:
+    row = conn.execute(
+        """
+        SELECT id, tool_name, operation_type, risk_level, summary, payload,
+               status, result, source_text, created_at, updated_at,
+               confirmed_at, rejected_at, conversation_id, idempotency_key
+        FROM agent_pending_operation
+        WHERE user_id = %s AND id = %s
+        FOR UPDATE
+        """,
+        (user_id, operation_id),
+    ).fetchone()
     if row is None:
         raise ValueError("待确认操作不存在或已处理。")
     return _operation_row(row)

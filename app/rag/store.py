@@ -11,7 +11,7 @@ import httpx
 
 from app.core.config import settings
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
-from app.rag.document_loader import StorageObjectRef, load_document_text, split_text
+from app.rag.document_loader import StorageObjectRef, load_document_text, split_text_with_metadata
 from app.rag.reranker import rerank_items
 
 
@@ -21,6 +21,10 @@ class KnowledgeChunk:
     knowledge_base_id: str
     title: str
     chunk: str
+    chunk_index: int = 1
+    parent_title: str = ""
+    start_char: int = 0
+    end_char: int = 0
 
 
 _lock = Lock()
@@ -40,7 +44,7 @@ def add_document(
 ) -> dict[str, object]:
     task_id = f"ingest-{file_id}"
     title, text = load_document_text(storage_ref or storage_path)
-    chunks = split_text(text)
+    chunks = split_text_with_metadata(text)
     logger.info("Document ingest started. file_id=%s knowledge_base_id=%s chunks=%s", file_id, knowledge_base_id, len(chunks))
 
     with _lock:
@@ -53,7 +57,11 @@ def add_document(
                 doc_id=file_id,
                 knowledge_base_id=knowledge_base_id,
                 title=f"{title} #{index}",
-                chunk=chunk,
+                chunk=chunk.text,
+                chunk_index=chunk.index,
+                parent_title=chunk.parent_title,
+                start_char=chunk.start_char,
+                end_char=chunk.end_char,
             )
             _chunks.append(item)
             try:
@@ -115,6 +123,10 @@ def list_chunks(knowledge_base_id: str | None = None, limit: int = 50) -> list[d
             "knowledge_base_id": item.knowledge_base_id,
             "title": item.title,
             "chunk": item.chunk,
+            "chunkIndex": str(item.chunk_index),
+            "parentTitle": item.parent_title,
+            "startChar": str(item.start_char),
+            "endChar": str(item.end_char),
             "backend": "memory",
         }
         for item in items
@@ -140,14 +152,16 @@ def search(question: str, knowledge_base_ids: list[str], top_k: int = 5) -> list
     qdrant_results = _qdrant_search(question, knowledge_base_ids, candidate_limit)
     keyword_results = _keyword_search(question, knowledge_base_ids, candidate_limit)
     merged = _merge_rag_results(qdrant_results, keyword_results)
+    expanded = _expand_parent_child_contexts(merged, knowledge_base_ids, candidate_limit)
     logger.info(
-        "RAG hybrid searched. knowledge_base_ids=%s vector=%s keyword=%s merged=%s",
+        "RAG hybrid searched. knowledge_base_ids=%s vector=%s keyword=%s merged=%s expanded=%s",
         knowledge_base_ids,
         len(qdrant_results),
         len(keyword_results),
         len(merged),
+        len(expanded),
     )
-    return rerank_items(question, merged, "chunk", top_k)
+    return rerank_items(question, expanded, "chunk", top_k)
 
 
 def _candidate_limit(top_k: int) -> int:
@@ -183,6 +197,10 @@ def _keyword_search(question: str, knowledge_base_ids: list[str], top_k: int) ->
             "score": str(round(score, 4)),
             "backend": "keyword",
             "hitModes": "keyword",
+            "chunkIndex": str(item.chunk_index),
+            "parentTitle": item.parent_title,
+            "startChar": str(item.start_char),
+            "endChar": str(item.end_char),
         }
         for score, item in scored[:top_k]
     ]
@@ -222,16 +240,108 @@ def _merge_rag_results(
     return sorted(merged.values(), key=lambda item: _safe_float(item.get("score")), reverse=True)
 
 
+def _expand_parent_child_contexts(
+    results: list[dict[str, str]],
+    knowledge_base_ids: list[str],
+    limit: int,
+) -> list[dict[str, str]]:
+    if not settings.rag_parent_child_expand_enabled or not results:
+        return results
+    target_ids = set(knowledge_base_ids)
+    existing_keys = {f"{item.get('doc_id', '')}:{item.get('chunk', '')}" for item in results}
+    additions: list[dict[str, str]] = []
+    existing_by_key = {f"{item.get('doc_id', '')}:{item.get('chunk', '')}": item for item in results}
+    sibling_limit = max(0, settings.rag_parent_child_sibling_limit)
+    if sibling_limit <= 0:
+        return results
+    with _lock:
+        chunks = [
+            item for item in _chunks
+            if item.knowledge_base_id in target_ids
+        ]
+    by_doc = {(item.doc_id, item.chunk_index): item for item in chunks}
+    for result in results[:limit]:
+        doc_id = result.get("doc_id", "")
+        parent_title = result.get("parentTitle", "")
+        try:
+            chunk_index = int(result.get("chunkIndex") or 0)
+        except ValueError:
+            chunk_index = 0
+        if chunk_index <= 0:
+            continue
+        candidates = _parent_child_candidates(chunks, by_doc, doc_id, parent_title, chunk_index, sibling_limit)
+        for candidate in candidates:
+            key = f"{candidate.doc_id}:{candidate.chunk}"
+            if key in existing_keys:
+                existing = existing_by_key.get(key)
+                if existing is not None:
+                    existing["backend"] = _join_modes(existing.get("backend", ""), "parent_child")
+                    existing["hitModes"] = _join_modes(existing.get("hitModes", ""), "parent_child")
+                continue
+            existing_keys.add(key)
+            additions.append({
+                "doc_id": candidate.doc_id,
+                "title": candidate.title,
+                "chunk": candidate.chunk,
+                "score": str(round(max(_safe_float(result.get("score")) * 0.82, 0.01), 4)),
+                "backend": "parent_child",
+                "hitModes": "parent_child",
+                "chunkIndex": str(candidate.chunk_index),
+                "parentTitle": candidate.parent_title,
+                "startChar": str(candidate.start_char),
+                "endChar": str(candidate.end_char),
+            })
+            if len(additions) >= limit:
+                return _merge_rag_results(results, additions)
+    return _merge_rag_results(results, additions)
+
+
+def _join_modes(existing: str, mode: str) -> str:
+    modes = set(filter(None, existing.split(",")))
+    modes.add(mode)
+    return ",".join(sorted(modes))
+
+
+def _parent_child_candidates(
+    chunks: list[KnowledgeChunk],
+    by_doc: dict[tuple[str, int], KnowledgeChunk],
+    doc_id: str,
+    parent_title: str,
+    chunk_index: int,
+    sibling_limit: int,
+) -> list[KnowledgeChunk]:
+    candidates: list[KnowledgeChunk] = []
+    if parent_title:
+        candidates.extend([
+            item for item in chunks
+            if item.doc_id == doc_id
+            and item.parent_title == parent_title
+            and item.chunk_index != chunk_index
+        ][:sibling_limit])
+    for offset in range(1, sibling_limit + 1):
+        for index in (chunk_index - offset, chunk_index + offset):
+            item = by_doc.get((doc_id, index))
+            if item and item not in candidates:
+                candidates.append(item)
+    return candidates[:sibling_limit]
+
+
 def _keyword_terms(text: str) -> list[str]:
     lowered = text.lower()
     latin_terms = re.findall(r"[a-z0-9][a-z0-9._-]{1,}", lowered)
+    latin_sub_terms = [
+        token
+        for term in latin_terms
+        for token in re.split(r"[._-]+", term)
+        if len(token) >= 2
+    ]
     chinese_terms = [
         token
         for token in re.split(r"[\s，。！？、,.!?；;：:（）()\[\]【】\"'“”]+", text)
         if len(token) >= 2 and not re.fullmatch(r"[a-zA-Z0-9._-]+", token)
     ]
     chinese_chars = re.findall(r"[\u4e00-\u9fff]", text)
-    terms = [*latin_terms, *chinese_terms, *chinese_chars]
+    terms = [*latin_terms, *latin_sub_terms, *chinese_terms, *chinese_chars]
     seen: set[str] = set()
     result: list[str] = []
     for term in terms:
@@ -245,19 +355,57 @@ def _keyword_terms(text: str) -> list[str]:
 def _keyword_score(query_terms: list[str], item: KnowledgeChunk) -> float:
     if not query_terms:
         return 0.0
-    haystack = f"{item.title}\n{item.chunk}".lower()
+    target = f"{item.title}\n{item.parent_title}\n{item.chunk}".lower()
+    doc_terms = _keyword_terms(target)
+    doc_len = max(len(doc_terms), 1)
+    avg_doc_len = _average_keyword_doc_len(item.knowledge_base_id)
+    total_docs = _knowledge_base_doc_count(item.knowledge_base_id)
+    k1 = 1.5
+    b = 0.75
+    score = 0.0
     matched = 0
-    weighted = 0.0
     for term in query_terms:
-        count = haystack.count(term)
-        if count <= 0:
+        tf = doc_terms.count(term)
+        if tf <= 0:
             continue
         matched += 1
-        weighted += (2.0 if len(term) >= 2 else 0.7) * (1.0 + math.log(count))
+        containing_docs = _document_frequency(term, item.knowledge_base_id)
+        idf = math.log(1 + (total_docs - containing_docs + 0.5) / (containing_docs + 0.5))
+        length_norm = tf + k1 * (1 - b + b * (doc_len / avg_doc_len))
+        score += idf * (tf * (k1 + 1) / max(length_norm, 0.0001))
     if matched == 0:
         return 0.0
     coverage = matched / len(query_terms)
-    return min(1.0, (weighted / max(len(query_terms), 1)) * 0.35 + coverage * 0.65)
+    normalized = score / (score + 4.0) if score > 0 else 0.0
+    return min(1.0, normalized * 0.72 + coverage * 0.28)
+
+
+def _knowledge_base_doc_count(knowledge_base_id: str) -> int:
+    with _lock:
+        return max(1, sum(1 for item in _chunks if item.knowledge_base_id == knowledge_base_id))
+
+
+def _average_keyword_doc_len(knowledge_base_id: str) -> float:
+    with _lock:
+        lengths = [
+            len(_keyword_terms(f"{item.title}\n{item.parent_title}\n{item.chunk}"))
+            for item in _chunks
+            if item.knowledge_base_id == knowledge_base_id
+        ]
+    return max(sum(lengths) / len(lengths), 1.0) if lengths else 1.0
+
+
+def _document_frequency(term: str, knowledge_base_id: str) -> int:
+    with _lock:
+        return max(
+            0,
+            sum(
+                1
+                for item in _chunks
+                if item.knowledge_base_id == knowledge_base_id
+                and term in _keyword_terms(f"{item.title}\n{item.parent_title}\n{item.chunk}")
+            ),
+        )
 
 
 def _safe_float(value: object) -> float:
@@ -307,6 +455,10 @@ def _qdrant_upsert(item: KnowledgeChunk, chunk_index: int) -> None:
                     "knowledge_base_id": item.knowledge_base_id,
                     "title": item.title,
                     "chunk": item.chunk,
+                    "chunk_index": item.chunk_index,
+                    "parent_title": item.parent_title,
+                    "start_char": item.start_char,
+                    "end_char": item.end_char,
                 },
             }
         ]
@@ -365,6 +517,11 @@ def _qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int) -> 
             "chunk": payload.get("chunk", ""),
             "score": str(point.get("score", 0)),
             "backend": "qdrant",
+            "hitModes": "vector",
+            "chunkIndex": str(payload.get("chunk_index", "")),
+            "parentTitle": payload.get("parent_title", ""),
+            "startChar": str(payload.get("start_char", "")),
+            "endChar": str(payload.get("end_char", "")),
         })
     return results
 

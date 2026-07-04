@@ -18,6 +18,11 @@ def retrieve_context(question: str, knowledge_base_ids: list[str]) -> list[dict[
             "chunk": document.page_content,
             "score": str(document.metadata.get("score", "")),
             "backend": str(document.metadata.get("backend", "")),
+            "hitModes": str(document.metadata.get("hitModes", "")),
+            "chunkIndex": str(document.metadata.get("chunkIndex", "")),
+            "parentTitle": str(document.metadata.get("parentTitle", "")),
+            "startChar": str(document.metadata.get("startChar", "")),
+            "endChar": str(document.metadata.get("endChar", "")),
         }
         for document in documents
     ]
@@ -59,6 +64,11 @@ def _retrieve_multi_query_contexts(
                 "chunk": chunk,
                 "score": str(score),
                 "backend": str(document.metadata.get("backend", "")),
+                "hitModes": str(document.metadata.get("hitModes", "")),
+                "chunkIndex": str(document.metadata.get("chunkIndex", "")),
+                "parentTitle": str(document.metadata.get("parentTitle", "")),
+                "startChar": str(document.metadata.get("startChar", "")),
+                "endChar": str(document.metadata.get("endChar", "")),
                 "query": query,
             }
     return sorted(
@@ -155,6 +165,11 @@ class LyleKnowledgeRetriever(BaseRetriever):
                     "title": item.get("title", ""),
                     "score": item.get("score", ""),
                     "backend": item.get("backend", ""),
+                    "hitModes": item.get("hitModes", ""),
+                    "chunkIndex": item.get("chunkIndex", ""),
+                    "parentTitle": item.get("parentTitle", ""),
+                    "startChar": item.get("startChar", ""),
+                    "endChar": item.get("endChar", ""),
                 },
             )
             for item in results

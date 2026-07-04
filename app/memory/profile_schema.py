@@ -69,6 +69,8 @@ LEGACY_KEY_TO_SCHEMA_PATH: dict[str, str] = {
     "preference": "preferences.general.likes",
     "technology_stack": "work.background",
     "constraint": "projects.open_questions",
+    "forget_request": "memory_control.forget_requests",
+    "sensitive_info": "memory_control.sensitive_info",
 }
 
 _VISUAL_TERMS = {"帽子", "帽衫", "头像", "发型", "头发", "穿搭", "图片", "照片", "形象", "视觉", "设计", "颜色", "配色"}
