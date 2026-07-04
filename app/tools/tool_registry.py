@@ -1,7 +1,9 @@
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import re
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import postgres_connection
@@ -14,6 +16,8 @@ from app.tools.task_tool import preview_calendar_event_from_question, preview_to
 from app.tools.tool_audit import audit_tool_call
 from app.tools.weather_tool import get_weather_from_question
 from app.tools.web_search_tool import search_web
+
+LOCAL_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,30 @@ def select_tools(question: str) -> list[str]:
         selected.append("memory_snapshot")
     if any(keyword in question for keyword in ["记忆统计", "记忆数量", "数据库统计", "统计记忆"]):
         selected.append("memory_stats")
+    work_summary_keywords = [
+        "任务汇总",
+        "任务总结",
+        "工作汇总",
+        "工作简报",
+        "进展汇总",
+        "进展总结",
+        "任务版图",
+        "工作版图",
+        "有哪些任务",
+        "几个任务",
+        "待办数量",
+        "逾期任务",
+        "本周到期",
+        "项目目标",
+        "项目计划",
+        "长任务计划",
+        "目标进度",
+        "当前任务",
+        "当前项目",
+        "本周安排",
+    ]
+    if any(keyword in question for keyword in work_summary_keywords):
+        selected.append("work_summary")
     if any(keyword in question for keyword in ["天气", "气温", "温度", "下雨", "下雪"]) or "weather" in lowered:
         selected.append("weather")
     search_keywords = [
@@ -321,6 +349,7 @@ def _operation_type_for_tool(tool_name: str, result: dict[str, object]) -> str:
         "health_check": "health.check",
         "memory_snapshot": "memory.snapshot",
         "memory_stats": "memory.stats",
+        "work_summary": "work.summary",
         "web_search": "web.search",
         "weather": "weather.read",
         "file_parse": "file.parse",
@@ -395,6 +424,12 @@ def _tool_specs() -> dict[str, ToolSpec]:
             description="只读查询 PostgreSQL 记忆表统计，不执行用户传入 SQL。",
             handler=_memory_stats,
             risk_policy=get_tool_risk_policy("memory_stats"),
+        ),
+        "work_summary": ToolSpec(
+            name="work_summary",
+            description="只读查询 PostgreSQL 中的待办、项目、目标、计划和项目关联，生成实时工作简报。",
+            handler=_work_summary,
+            risk_policy=get_tool_risk_policy("work_summary"),
         ),
         "web_search": ToolSpec(
             name="web_search",
@@ -507,6 +542,144 @@ def _memory_stats(user_id: str, conversation_id: str | None, question: str) -> d
     }
 
 
+def _work_summary(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
+    if not settings.postgres_enabled:
+        return {
+            "ok": False,
+            "content": "PostgreSQL 未启用，无法读取实时工作简报。",
+        }
+
+    now = datetime.now(UTC)
+    today_start, today_end = _local_day_window(now)
+    week_start, week_end = _local_week_window(now)
+    with postgres_connection() as conn:
+        todo_counts = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'open') AS open_count,
+              COUNT(*) FILTER (WHERE status = 'open' AND due_at >= %s AND due_at < %s) AS today_count,
+              COUNT(*) FILTER (WHERE status = 'open' AND due_at IS NOT NULL AND due_at < %s) AS overdue_count,
+              COUNT(*) FILTER (WHERE status = 'open' AND due_at >= %s AND due_at < %s) AS week_due_count
+            FROM agent_todo
+            WHERE user_id = %s
+            """,
+            (today_start, today_end, now, week_start, week_end, user_id),
+        ).fetchone()
+        week_due_rows = conn.execute(
+            """
+            SELECT id, title, due_at, conversation_id
+            FROM agent_todo
+            WHERE user_id = %s
+              AND status = 'open'
+              AND due_at >= %s
+              AND due_at < %s
+            ORDER BY due_at ASC NULLS LAST, updated_at DESC
+            LIMIT 8
+            """,
+            (user_id, week_start, week_end),
+        ).fetchall()
+        project_counts = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+              COUNT(*) AS total_count
+            FROM project
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        current_project_rows = _current_project_rows(conn, user_id, conversation_id)
+        goal_counts = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+              COALESCE(AVG(progress) FILTER (WHERE status = 'active'), 0) AS avg_progress,
+              COUNT(*) FILTER (WHERE status = 'completed') AS completed_count
+            FROM goal
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        plan_counts = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status IN ('running', 'awaiting_confirmation')) AS active_count,
+              COUNT(*) FILTER (WHERE status = 'running') AS running_count,
+              COUNT(*) FILTER (WHERE status = 'awaiting_confirmation') AS awaiting_count,
+              COUNT(*) FILTER (WHERE status = 'completed') AS completed_count
+            FROM agent_plan
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
+        link_rows = conn.execute(
+            """
+            SELECT target_type, COUNT(*)
+            FROM project_link
+            WHERE user_id = %s
+            GROUP BY target_type
+            ORDER BY target_type
+            """,
+            (user_id,),
+        ).fetchall()
+
+    summary = {
+        "todos": {
+            "open": int(todo_counts[0] or 0),
+            "today": int(todo_counts[1] or 0),
+            "overdue": int(todo_counts[2] or 0),
+            "weekDue": int(todo_counts[3] or 0),
+            "weekDueItems": [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "dueAt": row[2].isoformat() if row[2] else None,
+                    "conversationId": row[3],
+                }
+                for row in week_due_rows
+            ],
+        },
+        "projects": {
+            "active": int(project_counts[0] or 0),
+            "total": int(project_counts[1] or 0),
+            "current": [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "status": row[2],
+                    "currentStage": row[3],
+                    "confidence": float(row[4] or 0.0) if len(row) > 4 else None,
+                }
+                for row in current_project_rows
+            ],
+        },
+        "goals": {
+            "active": int(goal_counts[0] or 0),
+            "averageProgress": round(float(goal_counts[1] or 0.0), 3),
+            "completed": int(goal_counts[2] or 0),
+        },
+        "plans": {
+            "active": int(plan_counts[0] or 0),
+            "running": int(plan_counts[1] or 0),
+            "awaitingConfirmation": int(plan_counts[2] or 0),
+            "completed": int(plan_counts[3] or 0),
+        },
+        "projectLinks": {str(row[0]): int(row[1] or 0) for row in link_rows},
+        "range": {
+            "todayStart": today_start.isoformat(),
+            "todayEnd": today_end.isoformat(),
+            "weekStart": week_start.isoformat(),
+            "weekEnd": week_end.isoformat(),
+            "timezone": str(LOCAL_TIMEZONE),
+        },
+    }
+    return {
+        "ok": True,
+        "content": _format_work_summary(summary),
+        "summary": summary,
+    }
+
+
 def _web_search(user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
     return search_web(question)
 
@@ -572,7 +745,7 @@ def _allowed_tool_names() -> set[str]:
 
 
 def _tool_switch_enabled(tool_name: str) -> bool:
-    if tool_name == "memory_stats":
+    if tool_name in {"memory_stats", "work_summary"}:
         return settings.tool_database_query_enabled
     if tool_name == "web_search":
         return settings.tool_web_search_enabled
@@ -591,6 +764,76 @@ def _tool_switch_enabled(tool_name: str) -> bool:
     if tool_name == "calendar":
         return settings.tool_calendar_enabled
     return True
+
+
+def _local_day_window(now: datetime) -> tuple[datetime, datetime]:
+    local_now = now.astimezone(LOCAL_TIMEZONE)
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+def _local_week_window(now: datetime) -> tuple[datetime, datetime]:
+    local_now = now.astimezone(LOCAL_TIMEZONE)
+    start = local_now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=local_now.weekday())
+    end = start + timedelta(days=7)
+    return start.astimezone(UTC), end.astimezone(UTC)
+
+
+def _current_project_rows(conn, user_id: str, conversation_id: str | None):
+    if conversation_id:
+        rows = conn.execute(
+            """
+            SELECT p.id, p.name, p.status, p.current_stage, pl.confidence
+            FROM project_link pl
+            JOIN project p ON p.id = pl.project_id AND p.user_id = pl.user_id
+            WHERE pl.user_id = %s
+              AND pl.target_type = 'conversation'
+              AND pl.target_id = %s
+              AND p.status = 'active'
+            ORDER BY pl.confidence DESC, pl.created_at DESC
+            LIMIT 3
+            """,
+            (user_id, conversation_id),
+        ).fetchall()
+        if rows:
+            return rows
+    return conn.execute(
+        """
+        SELECT id, name, status, current_stage, NULL::double precision AS confidence
+        FROM project
+        WHERE user_id = %s AND status = 'active'
+        ORDER BY COALESCE(last_activity_at, updated_at) DESC
+        LIMIT 3
+        """,
+        (user_id,),
+    ).fetchall()
+
+
+def _format_work_summary(summary: dict[str, object]) -> str:
+    todos = summary.get("todos") if isinstance(summary.get("todos"), dict) else {}
+    projects = summary.get("projects") if isinstance(summary.get("projects"), dict) else {}
+    goals = summary.get("goals") if isinstance(summary.get("goals"), dict) else {}
+    plans = summary.get("plans") if isinstance(summary.get("plans"), dict) else {}
+    links = summary.get("projectLinks") if isinstance(summary.get("projectLinks"), dict) else {}
+    current_projects = projects.get("current") if isinstance(projects.get("current"), list) else []
+    current_names = "、".join(str(item.get("name") or "") for item in current_projects if isinstance(item, dict) and item.get("name")) or "暂无"
+    week_due_items = todos.get("weekDueItems") if isinstance(todos.get("weekDueItems"), list) else []
+    week_due_preview = "；".join(
+        str(item.get("title") or "")
+        for item in week_due_items[:5]
+        if isinstance(item, dict) and item.get("title")
+    ) or "暂无"
+    return (
+        "以下来自实时工作数据："
+        f"打开待办 {todos.get('open', 0)} 个，今日到期 {todos.get('today', 0)} 个，"
+        f"逾期 {todos.get('overdue', 0)} 个，本周到期 {todos.get('weekDue', 0)} 个。"
+        f"活跃项目 {projects.get('active', 0)} 个，当前相关项目：{current_names}。"
+        f"活跃目标 {goals.get('active', 0)} 个，平均进度 {round(float(goals.get('averageProgress', 0) or 0) * 100)}%。"
+        f"长任务计划 {plans.get('active', 0)} 个，其中运行中 {plans.get('running', 0)} 个、待确认 {plans.get('awaitingConfirmation', 0)} 个。"
+        f"项目关联 {sum(int(value or 0) for value in links.values()) if isinstance(links, dict) else 0} 条。"
+        f"本周到期预览：{week_due_preview}。"
+    )
 
 
 def _dedupe(items: list[str]) -> list[str]:

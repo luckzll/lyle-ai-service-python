@@ -9,6 +9,7 @@ from app.tools.web_search_tool import search_web
 
 def test_select_tools_detects_memory_stats_and_web_search():
     assert "memory_stats" in select_tools("帮我看一下记忆统计")
+    assert "work_summary" in select_tools("我现在有几个要完成的任务有几个项目目标给我做一下汇总")
     assert "web_search" in select_tools("联网搜索一下最新消息")
     assert "web_search" in select_tools("你去网上搜一下他们6.0版本的争议")
     assert "web_search" in select_tools("他们6.0版本的争议是什么")
@@ -91,6 +92,21 @@ def test_memory_stats_reports_postgres_disabled(monkeypatch):
     assert result["error"]["code"] == "DATABASE_ERROR"
 
 
+def test_work_summary_reports_postgres_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "tool_audit_enabled", False)
+    monkeypatch.setattr(settings, "tool_allowed_names", "work_summary")
+    monkeypatch.setattr(settings, "tool_database_query_enabled", True)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+
+    result = execute_tool("work_summary", "u1", "c1", "任务汇总")
+
+    assert result["ok"] is False
+    assert "PostgreSQL 未启用" in result["content"]
+    assert result["operationType"] == "work.summary"
+    assert result["riskLevel"] == "read"
+    assert result["error"]["code"] == "DATABASE_ERROR"
+
+
 def test_web_search_requires_explicit_enablement(monkeypatch):
     monkeypatch.setattr(settings, "tool_audit_enabled", False)
     monkeypatch.setattr(settings, "tool_allowed_names", "web_search")
@@ -118,6 +134,7 @@ def test_list_available_tools_marks_enabled_state(monkeypatch):
 
     assert tools["health_check"]["enabled"] is True
     assert tools["memory_stats"]["enabled"] is False
+    assert tools["work_summary"]["enabled"] is False
     assert tools["web_search"]["enabled"] is False
     assert tools["weather"]["enabled"] is False
     assert tools["file_parse"]["enabled"] is True

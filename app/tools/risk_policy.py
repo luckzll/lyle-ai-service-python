@@ -34,6 +34,7 @@ TOOL_RISK_POLICIES: dict[str, ToolRiskPolicy] = {
     "health_check": READ_ONLY,
     "memory_snapshot": READ_ONLY,
     "memory_stats": READ_ONLY,
+    "work_summary": READ_ONLY,
     "list_tools": READ_ONLY,
     "weather": EXTERNAL_READ,
     "web_search": EXTERNAL_READ,

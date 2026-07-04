@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     tool_router_context_max_chars: int = 3000
     tool_router_confidence_threshold: float = 0.65
     # 允许调用的工具白名单，逗号分隔。生产环境建议只开放明确需要的工具。
-    tool_allowed_names: str = "health_check,memory_snapshot,list_tools,memory_stats,web_search,weather,file_parse,image_analyze,image_generate,image_edit,todo,calendar"
+    tool_allowed_names: str = "health_check,memory_snapshot,list_tools,memory_stats,work_summary,web_search,weather,file_parse,image_analyze,image_generate,image_edit,todo,calendar"
     # 工具调用审计。开启后会写日志；PostgreSQL 可用时也会写 tool_audit_log。
     tool_audit_enabled: bool = True
     # 只读数据库统计工具。只允许查询本项目记忆表统计，不执行用户传入 SQL。

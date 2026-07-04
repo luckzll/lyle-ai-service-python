@@ -144,7 +144,7 @@ def _route_tools_with_context(user_id: str, conversation_id: str | None, questio
 
 
 def _can_skip_llm_router(rule_selected_tools: list[str]) -> bool:
-    return all(tool_name in {"todo", "calendar", "health_check", "memory_snapshot", "memory_stats", "list_tools"} for tool_name in rule_selected_tools)
+    return all(tool_name in {"todo", "calendar", "health_check", "memory_snapshot", "memory_stats", "work_summary", "list_tools"} for tool_name in rule_selected_tools)
 
 
 def _merge_tools(rule_tools: list[str], router_tools: object) -> list[str]:
