@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.projects.project_store import create_project_link, get_project, list_projects
+from app.projects.project_store import create_project_link, get_project, list_project_links, list_projects
 
 
 def resolve_project(user_id: str, conversation_id: str | None, user_input: str, project_id: int | None = None) -> dict[str, Any]:
@@ -78,6 +78,18 @@ def resolve_project(user_id: str, conversation_id: str | None, user_input: str, 
             scored.append((score, project, hits))
 
     if not scored:
+        linked_project = _project_from_conversation_link(user_id, conversation_id, projects, text)
+        if linked_project:
+            project, link = linked_project
+            return {
+                "projectId": project["id"],
+                "projectName": project["name"],
+                "confidence": round(float(link.get("confidence") or 0.8), 2),
+                "requiresClarification": False,
+                "reason": "沿用当前会话已关联项目",
+                "candidates": [{"projectId": project["id"], "projectName": project["name"], "confidence": round(float(link.get("confidence") or 0.8), 2)}],
+                "linkedConversation": True,
+            }
         return {
             "projectId": None,
             "projectName": "",
@@ -133,3 +145,29 @@ def _project_keywords(name: str, slug: str, description: str, stage: str) -> lis
 
 def _looks_project_related(text: str) -> bool:
     return any(keyword in text for keyword in ["项目", "版本", "目标", "里程碑", "任务", "规划", "复盘", "prd", "v2", "v3"])
+
+
+def _looks_project_followup(text: str) -> bool:
+    return any(keyword in text for keyword in ["这个目标", "该目标", "这个项目", "该项目", "基于", "继续", "拆", "计划", "推进", "下一步"])
+
+
+def _project_from_conversation_link(
+    user_id: str,
+    conversation_id: str | None,
+    projects: list[dict[str, Any]],
+    text: str,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if not conversation_id or not _looks_project_followup(text):
+        return None
+    best: tuple[dict[str, Any], dict[str, Any]] | None = None
+    for project in projects:
+        try:
+            links = list_project_links(user_id, int(project["id"]), target_type="conversation", limit=20)
+        except Exception:
+            continue
+        for link in links:
+            if str(link.get("targetId") or "") != str(conversation_id):
+                continue
+            if best is None or float(link.get("confidence") or 0.0) > float(best[1].get("confidence") or 0.0):
+                best = (project, link)
+    return best

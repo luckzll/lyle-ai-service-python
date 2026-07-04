@@ -151,6 +151,24 @@ def _rule_v3_project_work_review(
         and (item.get("connector") or str(item.get("tool") or "").startswith("connector."))
         and item.get("ok") is False
     ]
+    pending_operations = [
+        item for item in tool_results
+        if isinstance(item, dict)
+        and item.get("requiresConfirmation")
+        and isinstance(item.get("operation"), dict)
+        and (item.get("operation") or {}).get("status") == "pending"
+    ]
+    if pending_operations and _answer_self_confirms_pending_operation(answer):
+        return {
+            "approved": False,
+            "score": 0.35,
+            "reason": "已有待确认操作卡，但回答出现自问自答式确认文案",
+            "rewrite_instruction": "请只说明已生成待确认操作，请用户在卡片中点击确认或拒绝；不要问完又替用户回答，也不要暗示已经执行。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "pending_operation_confirmation_copy",
+        }
+
     if failed_connectors and _answer_claims_connector_success(answer) and not _answer_admits_connector_failure(answer):
         return {
             "approved": False,
@@ -292,6 +310,13 @@ def _answer_claims_goal_recorded(answer: str) -> bool:
     if any(marker in answer for marker in write_markers):
         return True
     return bool(re.search(r"(?:已|已经|直接).{0,12}(?:记录|挂到|写入|创建).{0,16}项目", answer))
+
+
+def _answer_self_confirms_pending_operation(answer: str) -> bool:
+    asks_confirmation = any(marker in answer for marker in ["要现在确认", "现在确认创建", "需要你点一下确认", "点击确认才"])
+    self_answer = any(marker in answer for marker in ["好的，我已经", "我已经准备好了", "我已经帮你准备", "只需你点击"])
+    executed_claim = any(marker in answer for marker in ["正式创建了", "已经创建到", "已创建到", "已经执行"])
+    return (asks_confirmation and self_answer) or executed_claim
 
 
 def _context_answer_coverage(answer: str, contexts: list[dict[str, str]]) -> float:

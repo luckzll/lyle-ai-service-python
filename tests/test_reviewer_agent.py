@@ -123,6 +123,26 @@ def test_reviewer_blocks_connector_failure_claimed_as_success(monkeypatch):
     assert review["v3Rule"] == "connector_failure"
 
 
+def test_reviewer_blocks_self_confirming_pending_operation_copy(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "创建待办：明天检查V3测试项目测试报告。",
+        "目前处于待确认状态，需要你点一下确认才会创建。好的，我已经准备好了，只需你点击确认即可正式创建。",
+        [],
+        "",
+        tool_results=[{
+            "tool": "todo",
+            "ok": True,
+            "requiresConfirmation": True,
+            "operation": {"id": 1, "status": "pending", "operationType": "todo.create"},
+        }],
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "pending_operation_confirmation_copy"
+
+
 def test_reviewer_blocks_long_task_execution_before_plan_confirmation(monkeypatch):
     monkeypatch.setattr(settings, "reviewer_enabled", False)
 
