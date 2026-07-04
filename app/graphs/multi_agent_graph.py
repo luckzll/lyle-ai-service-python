@@ -283,6 +283,7 @@ def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
             state["memory_context"],
             memory=state["memory"],
             rag_sufficiency=state["rag_sufficiency"],
+            tool_results=state["tool_results"],
         )
     except TypeError:
         review = run_reviewer_agent(

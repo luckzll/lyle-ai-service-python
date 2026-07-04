@@ -256,6 +256,14 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
             operation_type=operation_type,
             risk_level=str(operation.get("riskLevel") or "write"),
         )
+    if operation_type == "connector.local_docs.create":
+        from app.connectors.local_docs import execute_local_doc_create
+
+        return execute_local_doc_create(payload)
+    if operation_type == "connector.github.issue.create":
+        from app.connectors.github_connector import execute_github_issue_create
+
+        return execute_github_issue_create(payload)
     return _tool_result(
         ok=False,
         tool=str(operation.get("toolName") or ""),

@@ -11,6 +11,9 @@ def run_reviewer_agent(
     memory_context: str,
     memory: dict[str, object] | None = None,
     rag_sufficiency: dict[str, object] | None = None,
+    tool_results: list[dict[str, object]] | None = None,
+    project_context: dict[str, object] | None = None,
+    candidate_plans: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     rule_review = _rule_memory_governance_review(answer, memory or {})
     if not rule_review["approved"]:
@@ -18,6 +21,15 @@ def run_reviewer_agent(
     rag_review = _rule_rag_grounding_review(question, answer, contexts, rag_sufficiency or {})
     if not rag_review["approved"]:
         return rag_review
+    v3_review = _rule_v3_project_work_review(
+        question=question,
+        answer=answer,
+        tool_results=tool_results or [],
+        project_context=project_context or {},
+        candidate_plans=candidate_plans or [],
+    )
+    if not v3_review["approved"]:
+        return v3_review
     if not settings.reviewer_enabled:
         return {
             "approved": True,
@@ -122,6 +134,68 @@ def _rule_rag_grounding_review(
     return _approved_rule("RAG 规则通过")
 
 
+def _rule_v3_project_work_review(
+    *,
+    question: str,
+    answer: str,
+    tool_results: list[dict[str, object]],
+    project_context: dict[str, object],
+    candidate_plans: list[dict[str, object]],
+) -> dict[str, object]:
+    failed_connectors = [
+        item for item in tool_results
+        if isinstance(item, dict)
+        and (item.get("connector") or str(item.get("tool") or "").startswith("connector."))
+        and item.get("ok") is False
+    ]
+    if failed_connectors and _answer_claims_connector_success(answer) and not _answer_admits_connector_failure(answer):
+        return {
+            "approved": False,
+            "score": 0.25,
+            "reason": "连接器读取失败，但回答声称已成功读取或使用结果",
+            "rewrite_instruction": "请明确说明连接器读取失败，展示错误原因和是否可重试，不要编造外部来源内容。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "connector_failure",
+        }
+
+    if candidate_plans and _answer_claims_task_execution(answer):
+        return {
+            "approved": False,
+            "score": 0.3,
+            "reason": "长任务需要先展示计划并等待确认，回答不能声称已执行写操作",
+            "rewrite_instruction": "请改为展示计划、说明需要用户确认；涉及写入或外部变更时生成待确认操作。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "plan_confirmation",
+        }
+
+    if _answer_misuses_profile_as_project_source(answer):
+        return {
+            "approved": False,
+            "score": 0.35,
+            "reason": "回答把用户画像或个人偏好冒充为项目事实来源",
+            "rewrite_instruction": "请区分用户画像和项目事实。项目事实只能来自项目文件、项目对话、任务、决策或开放问题。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "project_fact_grounding",
+        }
+
+    resolver = project_context.get("resolver") if isinstance(project_context.get("resolver"), dict) else {}
+    if resolver.get("requiresClarification") and _answer_claims_project_linked(answer):
+        return {
+            "approved": False,
+            "score": 0.35,
+            "reason": "项目归属需要澄清，但回答声称已完成项目关联",
+            "rewrite_instruction": "请先向用户澄清项目归属，不要在低置信度或多项目命中时声称已关联。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "project_clarification",
+        }
+
+    return _approved_rule("V3 项目推进规则通过")
+
+
 def _approved_rule(reason: str) -> dict[str, object]:
     return {
         "approved": True,
@@ -138,6 +212,28 @@ def _answer_admits_insufficient_evidence(answer: str) -> bool:
 
 def _answer_claims_document_grounding(answer: str) -> bool:
     return any(marker in answer for marker in ["根据资料", "根据文档", "资料显示", "文档显示", "从资料", "来源显示"])
+
+
+def _answer_claims_connector_success(answer: str) -> bool:
+    return any(marker in answer for marker in ["已读取", "读取到", "搜索到", "命中", "根据 GitHub", "根据连接器", "GitHub 显示"])
+
+
+def _answer_admits_connector_failure(answer: str) -> bool:
+    return any(marker in answer for marker in ["读取失败", "连接器失败", "未配置", "无法读取", "授权", "token", "重试"])
+
+
+def _answer_claims_task_execution(answer: str) -> bool:
+    return any(marker in answer for marker in ["已执行", "已创建", "已写入", "已经完成", "我已帮你完成", "我已经创建"])
+
+
+def _answer_misuses_profile_as_project_source(answer: str) -> bool:
+    source_markers = ["用户画像", "个人偏好", "长期记忆", "你的偏好"]
+    fact_markers = ["项目事实", "项目结论", "项目来源", "项目已经", "因此项目"]
+    return any(source in answer for source in source_markers) and any(fact in answer for fact in fact_markers)
+
+
+def _answer_claims_project_linked(answer: str) -> bool:
+    return any(marker in answer for marker in ["已关联到项目", "已经关联项目", "已归入项目", "已链接到项目"])
 
 
 def _context_answer_coverage(answer: str, contexts: list[dict[str, str]]) -> float:

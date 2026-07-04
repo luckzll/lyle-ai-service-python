@@ -102,3 +102,66 @@ def test_reviewer_blocks_document_grounding_with_low_context_overlap(monkeypatch
 
     assert review["approved"] is False
     assert "覆盖过低" in review["reason"]
+
+
+def test_reviewer_blocks_connector_failure_claimed_as_success(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "读取 GitHub issue",
+        "已读取 GitHub，命中 3 条 issue。",
+        [],
+        "",
+        tool_results=[{
+            "connector": "github",
+            "ok": False,
+            "error": {"code": "AUTH_REQUIRED", "message": "GitHub token 未配置。"},
+        }],
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "connector_failure"
+
+
+def test_reviewer_blocks_long_task_execution_before_plan_confirmation(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "帮我把 V3 方案整理成 PRD 并拆任务",
+        "我已经完成并写入了任务。",
+        [],
+        "",
+        candidate_plans=[{"title": "整理 V3 PRD", "requiresConfirmation": True}],
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "plan_confirmation"
+
+
+def test_reviewer_blocks_profile_as_project_fact_source(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "Lyle 项目现在是什么阶段？",
+        "根据用户画像，这是项目事实：项目已经进入商业化阶段。",
+        [],
+        "",
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "project_fact_grounding"
+
+
+def test_reviewer_blocks_project_link_when_resolver_needs_clarification(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "Lyle 和 Eden 都要继续推进",
+        "已关联到项目 Lyle。",
+        [],
+        "",
+        project_context={"resolver": {"requiresClarification": True}},
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "project_clarification"

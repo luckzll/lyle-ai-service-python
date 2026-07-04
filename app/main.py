@@ -7,12 +7,17 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.api.agent import router as agent_router
+from app.api.briefings import router as briefings_router
 from app.api.chat import router as chat_router
+from app.api.connectors import router as connectors_router
 from app.api.evaluation import router as evaluation_router
+from app.api.goals import router as goals_router
 from app.api.ingest import router as ingest_router
 from app.api.memory import router as memory_router
 from app.api.metrics import router as metrics_router
+from app.api.plans import router as plans_router
 from app.api.prompts import router as prompts_router
+from app.api.projects import router as projects_router
 from app.api.rag_debug import router as rag_debug_router
 from app.api.tools import router as tools_router
 from app.core.config import settings
@@ -79,11 +84,16 @@ def health() -> dict[str, str]:
 
 
 app.include_router(chat_router, prefix="/ai", tags=["chat"])
+app.include_router(briefings_router, prefix="/ai", tags=["briefings"])
+app.include_router(connectors_router, prefix="/ai", tags=["connectors"])
 app.include_router(evaluation_router, prefix="/ai", tags=["evaluation"])
+app.include_router(goals_router, prefix="/ai", tags=["goals"])
 app.include_router(ingest_router, prefix="/ai", tags=["ingest"])
 app.include_router(agent_router, prefix="/ai", tags=["agent"])
 app.include_router(memory_router, prefix="/ai", tags=["memory"])
 app.include_router(metrics_router, prefix="/ai", tags=["metrics"])
+app.include_router(plans_router, prefix="/ai", tags=["plans"])
 app.include_router(tools_router, prefix="/ai", tags=["tools"])
 app.include_router(prompts_router, prefix="/ai", tags=["prompts"])
+app.include_router(projects_router, prefix="/ai", tags=["projects"])
 app.include_router(rag_debug_router, prefix="/ai", tags=["rag-debug"])

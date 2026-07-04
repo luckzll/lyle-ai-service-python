@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     tool_image_analyze_enabled: bool = True
     tool_image_generate_enabled: bool = True
     tool_image_edit_enabled: bool = True
+    # V3 轻量连接器：本地文档只允许读取白名单目录；GitHub 先支持只读能力。
+    connector_local_docs_roots: str = "../.."
+    connector_local_docs_max_files: int = 200
+    connector_local_docs_max_chars: int = 1200
+    connector_github_token: str = ""
+    connector_github_api_base_url: str = "https://api.github.com"
     # Seedream 图片生成/编辑是否添加可见水印。默认关闭。
     image_watermark: bool = False
     generated_image_storage: str = "local"

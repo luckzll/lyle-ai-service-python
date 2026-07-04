@@ -13,6 +13,10 @@ from app.agents.reviewer_agent import run_reviewer_agent
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
 from app.llm.client import stream_answer
 from app.memory.store import remember_interaction
+from app.plans.plan_builder import build_plan_candidate
+from app.projects.candidate_extractor import extract_project_candidates
+from app.projects.project_context_builder import build_project_context
+from app.projects.project_resolver import resolve_project
 from app.schemas.chat import ChatRequest, ChatResponse, Source, Usage
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
@@ -82,6 +86,15 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         *(result.get("agent_trace") or []),
         {"agent": "memory_agent", "action": "write", "deferred": True},
     ]
+    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message)
+    if project_context:
+        agent_trace.append({
+            "agent": "project_resolver",
+            "resolver": project_context.get("resolver") or {},
+            "contextSummary": (project_context.get("context") or {}).get("summary") if isinstance(project_context.get("context"), dict) else "",
+        })
+    project_candidates = extract_project_candidates(request.message, project_context)
+    plan_candidate = build_plan_candidate(request.message, project_context)
     return ChatResponse(
         answer=answer,
         sources=[
@@ -104,6 +117,11 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         toolResults=tool_results,
         candidateMemories=[],
         candidateTasks=_candidate_tasks_for_response(request.message, tool_results),
+        candidateGoals=project_candidates["candidateGoals"],
+        candidateDecisions=project_candidates["candidateDecisions"],
+        candidateOpenQuestions=project_candidates["candidateOpenQuestions"],
+        candidatePlans=[plan_candidate] if plan_candidate else [],
+        projectContext=project_context,
         review=result.get("review") or {},
     )
 
@@ -135,6 +153,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         [item.get("agent") for item in state.get("agent_trace", []) if isinstance(item, dict)],
     )
     contexts = state.get("contexts") or []
+    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message)
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
     combined_context = "\n\n".join(
@@ -151,6 +170,16 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         stream_started = perf_counter()
         answer_parts = []
         agent_trace = list(state.get("agent_trace") or [])
+        if project_context:
+            agent_trace.append({
+                "agent": "project_resolver",
+                "resolver": project_context.get("resolver") or {},
+                "contextSummary": (project_context.get("context") or {}).get("summary") if isinstance(project_context.get("context"), dict) else "",
+                "streaming": True,
+            })
+        project_candidates = extract_project_candidates(request.message, project_context)
+        plan_candidate = build_plan_candidate(request.message, project_context)
+        candidate_plans = [plan_candidate] if plan_candidate else []
         review: dict[str, object] = {"approved": True, "reason": "streaming mode"}
         try:
             with temporary_ai_config(request.ai_config):
@@ -212,6 +241,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     memory_context,
                     memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
                     rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
+                    tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+                    project_context=project_context,
+                    candidate_plans=candidate_plans,
                 )
                 logger.info(
                     "chat_stream timing review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs skipped=%s approved=%s",
@@ -261,6 +293,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         memory_context,
                         memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
                         rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
+                        tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+                        project_context=project_context,
+                        candidate_plans=candidate_plans,
                     )
                     agent_trace.append({
                         "agent": "reviewer_agent",
@@ -297,6 +332,11 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "toolResults": state.get("tool_results") or [],
                     "candidateMemories": [],
                     "candidateTasks": _candidate_tasks_for_response(request.message, state.get("tool_results") or []),
+                    "candidateGoals": project_candidates["candidateGoals"],
+                    "candidateDecisions": project_candidates["candidateDecisions"],
+                    "candidateOpenQuestions": project_candidates["candidateOpenQuestions"],
+                    "candidatePlans": candidate_plans,
+                    "projectContext": project_context,
                     "review": review,
                 }
                 meta_started = perf_counter()
@@ -353,6 +393,16 @@ def _friendly_stream_error(exc: Exception) -> str:
     if "rate" in lowered or "429" in lowered:
         return "模型服务当前限流了，请稍后再试。"
     return "模型服务暂时不可用，请稍后重试。"
+
+
+def _project_context_for_response(user_id: str, conversation_id: str | None, message: str) -> dict[str, object]:
+    resolver = resolve_project(user_id, conversation_id, message)
+    project_id = resolver.get("projectId")
+    context = build_project_context(user_id, int(project_id)) if project_id else {}
+    return {
+        "resolver": resolver,
+        "context": context,
+    }
 
 
 def _candidate_tasks_for_response(question: str, tool_results: list[dict[str, object]]) -> list[dict[str, object]]:

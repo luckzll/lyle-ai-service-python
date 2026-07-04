@@ -295,5 +295,45 @@
     "contexts": [{"title": "acceptance", "chunk": "Release gate: backend tests, frontend tests/build, E2E, regression cases。"}],
     "must_include": ["全量测试", "E2E", "回归评测", "未提交代码"],
     "min_score": 0.62
+  },
+  {
+    "case_type": "v3_project_clarification",
+    "question": "用户同时提到 Lyle 和 Eden 两个项目时应该直接关联哪个？",
+    "answer": "不应该强行关联。Project Resolver 应降低置信度并向用户澄清归属，等用户确认后再建立 project_link。",
+    "contexts": [{"title": "project_resolver", "chunk": "同时命中多个项目时 requiresClarification=true，不能自动写入错误项目。"}],
+    "must_include": ["不应该强行关联", "澄清", "project_link"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "v3_plan_confirmation",
+    "question": "长任务计划还没确认时可以执行写操作吗？",
+    "answer": "不可以。长任务必须先生成 agent_plan 并等待确认；涉及写入、外部变更或删除的 step 要暂停并生成待确认操作。",
+    "contexts": [{"title": "plan_runner", "chunk": "计划确认前不执行写操作；写操作通过 agent_pending_operation。"}],
+    "must_include": ["agent_plan", "等待确认", "待确认操作"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "v3_connector_failure",
+    "question": "GitHub 连接器读取失败时能不能说已经读取到了结果？",
+    "answer": "不能。连接器失败必须返回 ok=false 和 error.code/error.message/retryable，Writer 只能说明读取失败和是否可重试，不能编造 issue 或 PR 内容。",
+    "contexts": [{"title": "connector_result", "chunk": "连接器失败返回统一 ToolResult；失败时不得声称成功。"}],
+    "must_include": ["ok=false", "error.code", "不能编造"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "v3_github_read_safety",
+    "question": "读取 GitHub issue 列表时会不会顺手创建 issue？",
+    "answer": "不会。GitHub list/search/get 都是只读能力；创建 issue 必须走 preview_create 生成 pending operation，用户确认后才执行。",
+    "contexts": [{"title": "github_connector", "chunk": "GitHub 读操作不触发写入；写操作必须 pending confirmation。"}],
+    "must_include": ["只读", "preview_create", "用户确认后才执行"],
+    "min_score": 0.62
+  },
+  {
+    "case_type": "v3_project_fact_grounding",
+    "question": "项目事实可以从无关用户画像里直接拿来当来源吗？",
+    "answer": "不可以。项目事实应来自项目文件、项目对话、任务、决策或开放问题；用户画像只能作为偏好参考，不能冒充项目来源。",
+    "contexts": [{"title": "project_context", "chunk": "用户画像不是项目事实，项目事实必须来自 project context sources。"}],
+    "must_include": ["不可以", "项目文件", "不能冒充项目来源"],
+    "min_score": 0.62
   }
 ]
