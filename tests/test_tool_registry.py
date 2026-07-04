@@ -10,6 +10,7 @@ from app.tools.web_search_tool import search_web
 def test_select_tools_detects_memory_stats_and_web_search():
     assert "memory_stats" in select_tools("帮我看一下记忆统计")
     assert "work_summary" in select_tools("我现在有几个要完成的任务有几个项目目标给我做一下汇总")
+    assert "work_summary" in select_tools("看我所有项目任务操作计划目标")
     assert "web_search" in select_tools("联网搜索一下最新消息")
     assert "web_search" in select_tools("你去网上搜一下他们6.0版本的争议")
     assert "web_search" in select_tools("他们6.0版本的争议是什么")
@@ -105,6 +106,36 @@ def test_work_summary_reports_postgres_disabled(monkeypatch):
     assert result["operationType"] == "work.summary"
     assert result["riskLevel"] == "read"
     assert result["error"]["code"] == "DATABASE_ERROR"
+
+
+def test_work_summary_content_includes_detail_previews():
+    content = execute_tool.__globals__["_format_work_summary"]({
+        "todos": {
+            "open": 2,
+            "today": 1,
+            "overdue": 0,
+            "weekDue": 1,
+            "weekDueItems": [{"title": "周报"}],
+            "items": [{"title": "写测试"}],
+        },
+        "projects": {
+            "active": 1,
+            "current": [{"name": "V3"}],
+            "items": [{"name": "V3"}],
+            "rollup": [{"name": "V3", "activeGoals": 2, "activePlans": 1, "links": 3}],
+        },
+        "goals": {"active": 2, "averageProgress": 0.5, "items": [{"title": "完成验证"}]},
+        "plans": {"active": 1, "running": 1, "awaitingConfirmation": 0, "items": [{"title": "三步计划"}]},
+        "operations": {"pending": 1, "items": [{"summary": "创建待办"}]},
+        "projectLinks": {"conversation": 3},
+    })
+
+    assert "待办列表预览：写测试" in content
+    assert "项目列表预览：V3" in content
+    assert "目标列表预览：完成验证" in content
+    assert "计划列表预览：三步计划" in content
+    assert "操作列表预览：创建待办" in content
+    assert "按项目聚合：V3：目标2，计划1，关联3" in content
 
 
 def test_web_search_requires_explicit_enablement(monkeypatch):

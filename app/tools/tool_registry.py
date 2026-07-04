@@ -66,6 +66,15 @@ def select_tools(question: str) -> list[str]:
         "待办数量",
         "逾期任务",
         "本周到期",
+        "所有项目",
+        "所有任务",
+        "所有操作",
+        "所有计划",
+        "所有目标",
+        "项目任务",
+        "任务操作",
+        "操作计划",
+        "计划目标",
         "项目目标",
         "项目计划",
         "长任务计划",
@@ -578,6 +587,19 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
             """,
             (user_id, week_start, week_end),
         ).fetchall()
+        todo_rows = conn.execute(
+            """
+            SELECT id, title, status, due_at, conversation_id, updated_at
+            FROM agent_todo
+            WHERE user_id = %s
+            ORDER BY
+              CASE WHEN status = 'open' THEN 0 ELSE 1 END,
+              due_at ASC NULLS LAST,
+              updated_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
         project_counts = conn.execute(
             """
             SELECT
@@ -588,6 +610,19 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
             """,
             (user_id,),
         ).fetchone()
+        project_rows = conn.execute(
+            """
+            SELECT id, name, status, current_stage, priority,
+                   last_activity_at, updated_at
+            FROM project
+            WHERE user_id = %s
+            ORDER BY
+              CASE WHEN status = 'active' THEN 0 ELSE 1 END,
+              COALESCE(last_activity_at, updated_at) DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
         current_project_rows = _current_project_rows(conn, user_id, conversation_id)
         goal_counts = conn.execute(
             """
@@ -600,6 +635,20 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
             """,
             (user_id,),
         ).fetchone()
+        goal_rows = conn.execute(
+            """
+            SELECT g.id, g.project_id, p.name AS project_name, g.title,
+                   g.horizon, g.status, g.progress, g.due_at, g.updated_at
+            FROM goal g
+            LEFT JOIN project p ON p.id = g.project_id AND p.user_id = g.user_id
+            WHERE g.user_id = %s
+            ORDER BY
+              CASE WHEN g.status = 'active' THEN 0 ELSE 1 END,
+              g.updated_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
         plan_counts = conn.execute(
             """
             SELECT
@@ -612,6 +661,48 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
             """,
             (user_id,),
         ).fetchone()
+        plan_rows = conn.execute(
+            """
+            SELECT ap.id, ap.project_id, p.name AS project_name, ap.title,
+                   ap.objective, ap.status, ap.requires_confirmation, ap.updated_at
+            FROM agent_plan ap
+            LEFT JOIN project p ON p.id = ap.project_id AND p.user_id = ap.user_id
+            WHERE ap.user_id = %s
+            ORDER BY
+              CASE
+                WHEN ap.status = 'awaiting_confirmation' THEN 0
+                WHEN ap.status = 'running' THEN 1
+                ELSE 2
+              END,
+              ap.updated_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
+        operation_rows = conn.execute(
+            """
+            SELECT id, tool_name, operation_type, risk_level, summary,
+                   status, conversation_id, updated_at
+            FROM agent_pending_operation
+            WHERE user_id = %s
+            ORDER BY
+              CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+              updated_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        ).fetchall()
+        operation_counts = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE status = 'pending') AS pending_count,
+              COUNT(*) FILTER (WHERE status = 'confirmed') AS confirmed_count,
+              COUNT(*) FILTER (WHERE status = 'rejected') AS rejected_count
+            FROM agent_pending_operation
+            WHERE user_id = %s
+            """,
+            (user_id,),
+        ).fetchone()
         link_rows = conn.execute(
             """
             SELECT target_type, COUNT(*)
@@ -619,6 +710,23 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
             WHERE user_id = %s
             GROUP BY target_type
             ORDER BY target_type
+            """,
+            (user_id,),
+        ).fetchall()
+        project_rollup_rows = conn.execute(
+            """
+            SELECT p.id, p.name,
+                   COUNT(DISTINCT g.id) FILTER (WHERE g.status = 'active') AS active_goals,
+                   COUNT(DISTINCT ap.id) FILTER (WHERE ap.status IN ('running', 'awaiting_confirmation')) AS active_plans,
+                   COUNT(DISTINCT pl.id) AS links
+            FROM project p
+            LEFT JOIN goal g ON g.project_id = p.id AND g.user_id = p.user_id
+            LEFT JOIN agent_plan ap ON ap.project_id = p.id AND ap.user_id = p.user_id
+            LEFT JOIN project_link pl ON pl.project_id = p.id AND pl.user_id = p.user_id
+            WHERE p.user_id = %s
+            GROUP BY p.id, p.name, p.last_activity_at, p.updated_at
+            ORDER BY COALESCE(p.last_activity_at, p.updated_at) DESC
+            LIMIT 10
             """,
             (user_id,),
         ).fetchall()
@@ -638,6 +746,17 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
                 }
                 for row in week_due_rows
             ],
+            "items": [
+                {
+                    "id": row[0],
+                    "title": row[1],
+                    "status": row[2],
+                    "dueAt": row[3].isoformat() if row[3] else None,
+                    "conversationId": row[4],
+                    "updatedAt": row[5].isoformat() if row[5] else None,
+                }
+                for row in todo_rows
+            ],
         },
         "projects": {
             "active": int(project_counts[0] or 0),
@@ -652,17 +771,84 @@ def _work_summary(user_id: str, conversation_id: str | None, question: str) -> d
                 }
                 for row in current_project_rows
             ],
+            "items": [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "status": row[2],
+                    "currentStage": row[3],
+                    "priority": row[4],
+                    "lastActivityAt": row[5].isoformat() if row[5] else None,
+                    "updatedAt": row[6].isoformat() if row[6] else None,
+                }
+                for row in project_rows
+            ],
+            "rollup": [
+                {
+                    "id": row[0],
+                    "name": row[1],
+                    "activeGoals": int(row[2] or 0),
+                    "activePlans": int(row[3] or 0),
+                    "links": int(row[4] or 0),
+                }
+                for row in project_rollup_rows
+            ],
         },
         "goals": {
             "active": int(goal_counts[0] or 0),
             "averageProgress": round(float(goal_counts[1] or 0.0), 3),
             "completed": int(goal_counts[2] or 0),
+            "items": [
+                {
+                    "id": row[0],
+                    "projectId": row[1],
+                    "projectName": row[2],
+                    "title": row[3],
+                    "horizon": row[4],
+                    "status": row[5],
+                    "progress": float(row[6] or 0.0),
+                    "dueAt": row[7].isoformat() if row[7] else None,
+                    "updatedAt": row[8].isoformat() if row[8] else None,
+                }
+                for row in goal_rows
+            ],
         },
         "plans": {
             "active": int(plan_counts[0] or 0),
             "running": int(plan_counts[1] or 0),
             "awaitingConfirmation": int(plan_counts[2] or 0),
             "completed": int(plan_counts[3] or 0),
+            "items": [
+                {
+                    "id": row[0],
+                    "projectId": row[1],
+                    "projectName": row[2],
+                    "title": row[3],
+                    "objective": row[4],
+                    "status": row[5],
+                    "requiresConfirmation": bool(row[6]),
+                    "updatedAt": row[7].isoformat() if row[7] else None,
+                }
+                for row in plan_rows
+            ],
+        },
+        "operations": {
+            "pending": int(operation_counts[0] or 0),
+            "confirmed": int(operation_counts[1] or 0),
+            "rejected": int(operation_counts[2] or 0),
+            "items": [
+                {
+                    "id": row[0],
+                    "toolName": row[1],
+                    "operationType": row[2],
+                    "riskLevel": row[3],
+                    "summary": row[4],
+                    "status": row[5],
+                    "conversationId": row[6],
+                    "updatedAt": row[7].isoformat() if row[7] else None,
+                }
+                for row in operation_rows
+            ],
         },
         "projectLinks": {str(row[0]): int(row[1] or 0) for row in link_rows},
         "range": {
@@ -815,6 +1001,7 @@ def _format_work_summary(summary: dict[str, object]) -> str:
     projects = summary.get("projects") if isinstance(summary.get("projects"), dict) else {}
     goals = summary.get("goals") if isinstance(summary.get("goals"), dict) else {}
     plans = summary.get("plans") if isinstance(summary.get("plans"), dict) else {}
+    operations = summary.get("operations") if isinstance(summary.get("operations"), dict) else {}
     links = summary.get("projectLinks") if isinstance(summary.get("projectLinks"), dict) else {}
     current_projects = projects.get("current") if isinstance(projects.get("current"), list) else []
     current_names = "、".join(str(item.get("name") or "") for item in current_projects if isinstance(item, dict) and item.get("name")) or "暂无"
@@ -824,6 +1011,17 @@ def _format_work_summary(summary: dict[str, object]) -> str:
         for item in week_due_items[:5]
         if isinstance(item, dict) and item.get("title")
     ) or "暂无"
+    todo_preview = _preview_titles(todos.get("items"), "title")
+    project_preview = _preview_titles(projects.get("items"), "name")
+    goal_preview = _preview_titles(goals.get("items"), "title")
+    plan_preview = _preview_titles(plans.get("items"), "title")
+    operation_preview = _preview_titles(operations.get("items"), "summary")
+    project_rollup = projects.get("rollup") if isinstance(projects.get("rollup"), list) else []
+    rollup_preview = "；".join(
+        f"{item.get('name')}：目标{item.get('activeGoals', 0)}，计划{item.get('activePlans', 0)}，关联{item.get('links', 0)}"
+        for item in project_rollup[:5]
+        if isinstance(item, dict) and item.get("name")
+    ) or "暂无"
     return (
         "以下来自实时工作数据："
         f"打开待办 {todos.get('open', 0)} 个，今日到期 {todos.get('today', 0)} 个，"
@@ -831,9 +1029,27 @@ def _format_work_summary(summary: dict[str, object]) -> str:
         f"活跃项目 {projects.get('active', 0)} 个，当前相关项目：{current_names}。"
         f"活跃目标 {goals.get('active', 0)} 个，平均进度 {round(float(goals.get('averageProgress', 0) or 0) * 100)}%。"
         f"长任务计划 {plans.get('active', 0)} 个，其中运行中 {plans.get('running', 0)} 个、待确认 {plans.get('awaitingConfirmation', 0)} 个。"
+        f"待确认操作 {operations.get('pending', 0)} 个。"
         f"项目关联 {sum(int(value or 0) for value in links.values()) if isinstance(links, dict) else 0} 条。"
         f"本周到期预览：{week_due_preview}。"
+        f"待办列表预览：{todo_preview}。"
+        f"项目列表预览：{project_preview}。"
+        f"目标列表预览：{goal_preview}。"
+        f"计划列表预览：{plan_preview}。"
+        f"操作列表预览：{operation_preview}。"
+        f"按项目聚合：{rollup_preview}。"
     )
+
+
+def _preview_titles(items: object, key: str, limit: int = 5) -> str:
+    if not isinstance(items, list):
+        return "暂无"
+    values = [
+        str(item.get(key) or "").strip()
+        for item in items[:limit]
+        if isinstance(item, dict) and str(item.get(key) or "").strip()
+    ]
+    return "；".join(values) if values else "暂无"
 
 
 def _dedupe(items: list[str]) -> list[str]:
