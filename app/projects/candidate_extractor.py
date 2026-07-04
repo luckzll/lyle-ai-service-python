@@ -20,10 +20,7 @@ def extract_project_candidates(message: str, project_context: dict[str, Any]) ->
 def _goal_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
     if not any(keyword in text for keyword in ["目标", "这周", "本周", "本月", "希望", "想把", "计划", "完成"]):
         return []
-    title = _trim_prefix(
-        text,
-        ["我的目标是", "目标是", "这周要", "本周要", "本月要", "我希望", "我想把", "计划", "完成"],
-    )
+    title = _goal_title(text)
     if len(title) < 4:
         return []
     horizon = "week" if any(keyword in text for keyword in ["这周", "本周"]) else "month" if "本月" in text else "long_term" if "长期" in text else "week"
@@ -84,6 +81,22 @@ def _trim_prefix(text: str, prefixes: list[str]) -> str:
     for prefix in prefixes:
         result = result.replace(prefix, "")
     return re.sub(r"^[：:，,\s]+", "", result).strip()
+
+
+def _goal_title(text: str) -> str:
+    patterns = [
+        r"(?:新增|添加|创建|记录)(?:一个)?目标[：:]\s*([^。！？!?，,]+)",
+        r"目标[：:]\s*([^。！？!?，,]+)",
+        r"(?:我的目标是|目标是|这周要|本周要|本月要|我希望|我想把)([^。！？!?，,]+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip(" ：:，,。.")
+    return _trim_prefix(
+        text,
+        ["我的目标是", "目标是", "这周要", "本周要", "本月要", "我希望", "我想把", "计划", "完成"],
+    )
 
 
 def _sentence_title(text: str) -> str:
