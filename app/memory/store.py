@@ -1499,6 +1499,8 @@ def _extract_structured_candidates(text: str, recent_turns: list[MemoryTurn] | N
         return _dedupe_structured_candidates(control_candidates)
     if _is_question_like_text(text):
         return []
+    if _is_operational_memory_noise_text(text):
+        return []
     if _is_task_commitment_text(text):
         return []
 
@@ -1688,6 +1690,25 @@ def _is_question_like_text(text: str) -> bool:
 
 def _is_task_commitment_text(text: str) -> bool:
     return bool(_task_commitment_goal(text))
+
+
+def _is_operational_memory_noise_text(text: str) -> bool:
+    operation_markers = [
+        "创建待办",
+        "加个待办",
+        "创建日历",
+        "加个日程",
+        "待确认操作",
+        "确认执行",
+        "创建计划",
+        "拆一个三步",
+        "三步推进计划",
+        "拆解计划",
+        "推进计划",
+    ]
+    if any(marker in text for marker in operation_markers):
+        return True
+    return "基于" in text and "目标" in text and "拆" in text and "计划" in text
 
 
 def _task_commitment_goal(text: str) -> str:

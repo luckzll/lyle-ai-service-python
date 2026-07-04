@@ -74,6 +74,40 @@ def test_candidate_memory_records_source_reference(monkeypatch):
     assert candidate["source"].startswith("source_ref:conversation:conversation-123\n")
 
 
+def test_operational_plan_message_does_not_create_structured_memory(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "hybrid")
+
+    result = remember_interaction(
+        "operation-noise-user",
+        "operation-noise-conversation",
+        "基于 V3测试项目 的目标「完成测试报告」拆一个三步推进计划。",
+        "已生成待确认计划，请在下方计划卡片中点击创建计划。",
+    )
+
+    assert result["candidateMemories"] == []
+
+
+def test_todo_operation_message_does_not_create_structured_memory(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "hybrid")
+
+    result = remember_interaction(
+        "todo-noise-user",
+        "todo-noise-conversation",
+        "创建待办：明天检查V3测试报告。",
+        "已生成待确认操作，请在下方操作卡片中点击确认执行。",
+    )
+
+    assert result["candidateMemories"] == []
+
+
 def test_structured_memory_confidence_adjusts_with_confirmation_and_disable(monkeypatch):
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "redis_enabled", False)
