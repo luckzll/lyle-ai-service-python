@@ -13,6 +13,7 @@ def run_reviewer_agent(
     rag_sufficiency: dict[str, object] | None = None,
     tool_results: list[dict[str, object]] | None = None,
     project_context: dict[str, object] | None = None,
+    candidate_goals: list[dict[str, object]] | None = None,
     candidate_plans: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     rule_review = _rule_memory_governance_review(answer, memory or {})
@@ -26,6 +27,7 @@ def run_reviewer_agent(
         answer=answer,
         tool_results=tool_results or [],
         project_context=project_context or {},
+        candidate_goals=candidate_goals or [],
         candidate_plans=candidate_plans or [],
     )
     if not v3_review["approved"]:
@@ -140,6 +142,7 @@ def _rule_v3_project_work_review(
     answer: str,
     tool_results: list[dict[str, object]],
     project_context: dict[str, object],
+    candidate_goals: list[dict[str, object]],
     candidate_plans: list[dict[str, object]],
 ) -> dict[str, object]:
     failed_connectors = [
@@ -182,6 +185,28 @@ def _rule_v3_project_work_review(
         }
 
     resolver = project_context.get("resolver") if isinstance(project_context.get("resolver"), dict) else {}
+    if candidate_goals and _answer_claims_goal_recorded(answer):
+        return {
+            "approved": False,
+            "score": 0.3,
+            "reason": "目标候选需要用户确认，回答不能声称已经直接记录",
+            "rewrite_instruction": "请说明已经生成待确认目标，等待用户在目标卡片中确认；不要声称已直接写入项目目标。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "goal_confirmation",
+        }
+
+    if _question_requests_project_goal_write(question) and not resolver.get("projectId") and _answer_claims_goal_recorded(answer):
+        return {
+            "approved": False,
+            "score": 0.25,
+            "reason": "项目未匹配成功，但回答声称目标已经记录或挂到项目",
+            "rewrite_instruction": "请说明没有匹配到明确项目，让用户先选择或创建正确项目；不要声称目标已经记录。",
+            "skipped": False,
+            "ruleBlocked": True,
+            "v3Rule": "goal_project_missing",
+        }
+
     if resolver.get("requiresClarification") and _answer_claims_project_linked(answer):
         return {
             "approved": False,
@@ -234,6 +259,31 @@ def _answer_misuses_profile_as_project_source(answer: str) -> bool:
 
 def _answer_claims_project_linked(answer: str) -> bool:
     return any(marker in answer for marker in ["已关联到项目", "已经关联项目", "已归入项目", "已链接到项目"])
+
+
+def _question_requests_project_goal_write(question: str) -> bool:
+    return (
+        any(marker in question for marker in ["新增一个目标", "新增目标", "记录一个目标", "添加目标", "创建目标", "目标：", "目标:"])
+        and any(marker in question for marker in ["项目", "project", "版本"])
+    )
+
+
+def _answer_claims_goal_recorded(answer: str) -> bool:
+    write_markers = [
+        "已经直接记录",
+        "已直接记录",
+        "目标已经记录",
+        "目标已记录",
+        "已经记录下来",
+        "已记录下来",
+        "已经挂到",
+        "已挂到",
+        "已经写入",
+        "已写入",
+        "已经创建目标",
+        "已创建目标",
+    ]
+    return any(marker in answer for marker in write_markers)
 
 
 def _context_answer_coverage(answer: str, contexts: list[dict[str, str]]) -> float:

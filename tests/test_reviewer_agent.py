@@ -138,6 +138,37 @@ def test_reviewer_blocks_long_task_execution_before_plan_confirmation(monkeypatc
     assert review["v3Rule"] == "plan_confirmation"
 
 
+def test_reviewer_blocks_goal_recorded_claim_before_confirmation(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "在 V3测试项目 下新增一个目标：完成测试报告，周期本周。",
+        "目标已经直接记录下来，挂到 V3测试项目 下。",
+        [],
+        "",
+        project_context={"resolver": {"projectId": 9, "requiresClarification": False}},
+        candidate_goals=[{"title": "完成测试报告", "projectId": 9, "status": "pending"}],
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "goal_confirmation"
+
+
+def test_reviewer_blocks_goal_recorded_claim_when_project_missing(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "在 T2测试项目 下新增一个目标：完成测试报告，周期本周。",
+        "目标已经记录下来，并挂到 T2测试项目 下。",
+        [],
+        "",
+        project_context={"resolver": {"projectId": None, "requiresClarification": False}},
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "goal_project_missing"
+
+
 def test_reviewer_blocks_profile_as_project_fact_source(monkeypatch):
     monkeypatch.setattr(settings, "reviewer_enabled", False)
 

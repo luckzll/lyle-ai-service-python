@@ -243,6 +243,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
                     tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
                     project_context=project_context,
+                    candidate_goals=project_candidates["candidateGoals"],
                     candidate_plans=candidate_plans,
                 )
                 logger.info(
@@ -295,6 +296,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
                         tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
                         project_context=project_context,
+                        candidate_goals=project_candidates["candidateGoals"],
                         candidate_plans=candidate_plans,
                     )
                     agent_trace.append({
