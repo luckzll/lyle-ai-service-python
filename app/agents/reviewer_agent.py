@@ -272,18 +272,26 @@ def _answer_claims_goal_recorded(answer: str) -> bool:
     write_markers = [
         "已经直接记录",
         "已直接记录",
+        "直接记录到",
+        "直接记录进",
         "目标已经记录",
         "目标已记录",
         "已经记录下来",
         "已记录下来",
+        "记录到项目",
+        "记录进项目",
         "已经挂到",
         "已挂到",
+        "挂到项目",
         "已经写入",
         "已写入",
+        "写入项目",
         "已经创建目标",
         "已创建目标",
     ]
-    return any(marker in answer for marker in write_markers)
+    if any(marker in answer for marker in write_markers):
+        return True
+    return bool(re.search(r"(?:已|已经|直接).{0,12}(?:记录|挂到|写入|创建).{0,16}项目", answer))
 
 
 def _context_answer_coverage(answer: str, contexts: list[dict[str, str]]) -> float:
