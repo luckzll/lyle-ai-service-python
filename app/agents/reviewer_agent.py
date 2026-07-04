@@ -40,7 +40,7 @@ def run_reviewer_agent(
             "rewrite_instruction": "",
             "skipped": True,
         }
-    review = invoke_reviewer_chain(question, answer, contexts, memory_context)
+    review = invoke_reviewer_chain(question, answer, contexts, memory_context, tool_results or [])
     return {
         "approved": bool(review.get("approved", True)),
         "score": float(review.get("score") or 0),
