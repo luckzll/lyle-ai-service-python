@@ -306,6 +306,12 @@ def _answer_claims_goal_recorded(answer: str) -> bool:
         "写入项目",
         "已经创建目标",
         "已创建目标",
+        "目标已安排",
+        "目标已经安排",
+        "目标已就位",
+        "目标已经就位",
+        "为你新增",
+        "帮你新增",
     ]
     if any(marker in answer for marker in write_markers):
         return True

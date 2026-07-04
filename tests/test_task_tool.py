@@ -52,6 +52,7 @@ def test_preview_todo_from_question_requires_confirmation(monkeypatch):
     assert result["requiresConfirmation"] is True
     assert captured["tool_name"] == "todo"
     assert captured["operation_type"] == "todo.create"
+    assert "截止时间 2026/7/5 15:00:00（北京时间）" in captured["summary"]
     assert captured["payload"]["title"] == "提交周报"
     assert captured["payload"]["dueAt"].endswith("07:00:00+00:00")
 

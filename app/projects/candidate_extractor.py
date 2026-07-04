@@ -18,6 +18,8 @@ def extract_project_candidates(message: str, project_context: dict[str, Any]) ->
 
 
 def _goal_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
+    if _is_plan_request_without_goal_write(text):
+        return []
     if not any(keyword in text for keyword in ["目标", "这周", "本周", "本月", "希望", "想把", "计划", "完成"]):
         return []
     title = _goal_title(text)
@@ -34,6 +36,25 @@ def _goal_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
         "status": "pending",
         "source": text[:240],
     }]
+
+
+def _is_plan_request_without_goal_write(text: str) -> bool:
+    goal_write_markers = [
+        "新增一个目标",
+        "新增目标",
+        "添加一个目标",
+        "添加目标",
+        "创建一个目标",
+        "创建目标",
+        "记录一个目标",
+        "记录目标",
+        "目标：",
+        "目标:",
+    ]
+    if any(marker in text for marker in goal_write_markers):
+        return False
+    plan_markers = ["拆计划", "拆一个", "拆解", "分解", "推进计划", "三步计划", "三步推进"]
+    return "目标" in text and any(marker in text for marker in plan_markers)
 
 
 def _decision_candidates(text: str, project_id: int) -> list[dict[str, Any]]:

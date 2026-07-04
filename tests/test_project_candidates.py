@@ -22,3 +22,22 @@ def test_plan_candidate_detects_three_step_project_plan_request():
     assert candidate["projectId"] == 9
     assert candidate["requiresConfirmation"] is True
     assert len(candidate["steps"]) >= 3
+
+
+def test_plan_candidate_uses_quoted_goal_as_title():
+    candidate = build_plan_candidate(
+        "基于 V3测试项目 的目标「完成测试报告」拆一个三步推进计划。",
+        {"resolver": {"projectId": 9, "requiresClarification": False}},
+    )
+
+    assert candidate is not None
+    assert candidate["title"] == "完成测试报告推进计划"
+
+
+def test_plan_request_does_not_create_extra_goal_candidate():
+    result = extract_project_candidates(
+        "基于 V3测试项目 的目标「完成测试报告」拆一个三步推进计划。",
+        {"resolver": {"projectId": 9, "requiresClarification": False}},
+    )
+
+    assert result["candidateGoals"] == []

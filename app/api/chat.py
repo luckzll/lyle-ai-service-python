@@ -154,12 +154,21 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     )
     contexts = state.get("contexts") or []
     project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
+    project_candidates = extract_project_candidates(request.message, project_context)
+    plan_candidate = build_plan_candidate(request.message, project_context)
+    candidate_plans = [plan_candidate] if plan_candidate else []
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
+    confirmation_guidance = _v3_confirmation_guidance(
+        project_candidates["candidateGoals"],
+        candidate_plans,
+        state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+    )
     combined_context = "\n\n".join(
         item for item in [
             memory_context,
             tool_context,
+            confirmation_guidance,
         ] if item
     )
     writer_input = _writer_input_debug(memory_context, tool_context, contexts, combined_context)
@@ -169,6 +178,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     def generate():
         stream_started = perf_counter()
         answer_parts = []
+        used_v3_preview = False
         agent_trace = list(state.get("agent_trace") or [])
         if project_context:
             agent_trace.append({
@@ -177,9 +187,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 "contextSummary": (project_context.get("context") or {}).get("summary") if isinstance(project_context.get("context"), dict) else "",
                 "streaming": True,
             })
-        project_candidates = extract_project_candidates(request.message, project_context)
-        plan_candidate = build_plan_candidate(request.message, project_context)
-        candidate_plans = [plan_candidate] if plan_candidate else []
         review: dict[str, object] = {"approved": True, "reason": "streaming mode"}
         try:
             with temporary_ai_config(request.ai_config):
@@ -196,36 +203,55 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     )
                     yield _sse("delta", {"text": answer})
                 else:
-                    writer_started = perf_counter()
-                    first_delta_sent = False
-                    for chunk in stream_answer(request.message, contexts, combined_context):
-                        answer_parts.append(chunk)
-                        if not first_delta_sent:
-                            first_delta_sent = True
-                            logger.info(
-                                "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=writer",
-                                request.user_id,
-                                request.conversation_id,
-                                perf_counter() - writer_started,
-                                perf_counter() - request_started,
-                            )
-                        yield _sse("delta", {"text": chunk})
-                    logger.info(
-                        "chat_stream timing writer_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs chunks=%s chars=%s",
-                        request.user_id,
-                        request.conversation_id,
-                        perf_counter() - writer_started,
-                        perf_counter() - request_started,
-                        len(answer_parts),
-                        sum(len(part) for part in answer_parts),
+                    preview_answer = _v3_preview_answer(
+                        project_candidates["candidateGoals"],
+                        candidate_plans,
+                        state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+                        project_context,
                     )
-                    answer = "".join(answer_parts)
-                    answer = _strip_unbacked_image_markdown(answer, state.get("tool_results") or [])
-                    final_answer = _append_tool_artifacts(answer, state.get("tool_results") or [])
-                    artifact_text = final_answer[len(answer):]
-                    if artifact_text:
-                        answer = final_answer
-                        yield _sse("delta", {"text": artifact_text})
+                    if preview_answer:
+                        used_v3_preview = True
+                        answer = preview_answer
+                        answer_parts.append(answer)
+                        logger.info(
+                            "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=v3_preview",
+                            request.user_id,
+                            request.conversation_id,
+                            perf_counter() - stream_started,
+                            perf_counter() - request_started,
+                        )
+                        yield _sse("delta", {"text": answer})
+                    else:
+                        writer_started = perf_counter()
+                        first_delta_sent = False
+                        for chunk in stream_answer(request.message, contexts, combined_context):
+                            answer_parts.append(chunk)
+                            if not first_delta_sent:
+                                first_delta_sent = True
+                                logger.info(
+                                    "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=writer",
+                                    request.user_id,
+                                    request.conversation_id,
+                                    perf_counter() - writer_started,
+                                    perf_counter() - request_started,
+                                )
+                            yield _sse("delta", {"text": chunk})
+                        logger.info(
+                            "chat_stream timing writer_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs chunks=%s chars=%s",
+                            request.user_id,
+                            request.conversation_id,
+                            perf_counter() - writer_started,
+                            perf_counter() - request_started,
+                            len(answer_parts),
+                            sum(len(part) for part in answer_parts),
+                        )
+                        answer = "".join(answer_parts)
+                        answer = _strip_unbacked_image_markdown(answer, state.get("tool_results") or [])
+                        final_answer = _append_tool_artifacts(answer, state.get("tool_results") or [])
+                        artifact_text = final_answer[len(answer):]
+                        if artifact_text:
+                            answer = final_answer
+                            yield _sse("delta", {"text": artifact_text})
                 agent_trace.append({
                     "agent": "writer_agent",
                     "answerChars": len(answer),
@@ -263,7 +289,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "streaming": True,
                 })
 
-                if not review.get("approved", True) and settings.reviewer_max_retry >= 1:
+                if not used_v3_preview and not review.get("approved", True) and settings.reviewer_max_retry >= 1:
                     rewritten_answer = []
                     rewrite_prompt = (
                         f"{request.message}\n\n"
@@ -417,6 +443,87 @@ def _candidate_tasks_for_response(question: str, tool_results: list[dict[str, ob
     if has_pending_task_operation:
         return []
     return extract_candidate_tasks(question)
+
+
+def _v3_confirmation_guidance(
+    candidate_goals: list[dict[str, object]],
+    candidate_plans: list[dict[str, object]],
+    tool_results: list[dict[str, object]],
+) -> str:
+    pending_operations = [
+        item for item in tool_results
+        if isinstance(item, dict)
+        and item.get("requiresConfirmation")
+        and isinstance(item.get("operation"), dict)
+        and (item.get("operation") or {}).get("status") == "pending"
+    ]
+    lines: list[str] = []
+    if candidate_goals:
+        lines.append(
+            "本轮将生成待确认目标卡。回答必须说明目标仍需用户在卡片中确认；"
+            "禁止使用“已新增、已记录、已安排、已就位、已写入、为你新增、直接记录到项目”等已完成写入表述。"
+        )
+    if candidate_plans:
+        lines.append(
+            "本轮将生成待确认计划卡。回答必须说明计划草案需要用户点击“创建计划”；"
+            "禁止声称计划已经创建到项目或已经开始执行。"
+        )
+    if pending_operations:
+        lines.append(
+            "本轮已有待确认操作卡。回答只提示用户在卡片中确认或拒绝；"
+            "不要自问自答，不要说已经正式创建或已经执行。"
+        )
+    return "\n".join(f"[V3确认规则] {line}" for line in lines)
+
+
+def _v3_preview_answer(
+    candidate_goals: list[dict[str, object]],
+    candidate_plans: list[dict[str, object]],
+    tool_results: list[dict[str, object]],
+    project_context: dict[str, object] | None,
+) -> str:
+    resolver = project_context.get("resolver") if isinstance(project_context, dict) else {}
+    project_name = str(resolver.get("projectName") or "") if isinstance(resolver, dict) else ""
+    pending_operations = [
+        item for item in tool_results
+        if isinstance(item, dict)
+        and item.get("requiresConfirmation")
+        and isinstance(item.get("operation"), dict)
+        and (item.get("operation") or {}).get("status") == "pending"
+    ]
+    parts: list[str] = []
+    project_text = f"（{project_name}）" if project_name else ""
+    if candidate_goals:
+        goal = candidate_goals[0]
+        title = str(goal.get("title") or "目标")
+        horizon = str(goal.get("horizon") or "")
+        horizon_text = {
+            "day": "今日",
+            "week": "本周",
+            "month": "本月",
+            "quarter": "季度",
+            "long_term": "长期",
+        }.get(horizon, horizon or "未设置")
+        parts.append(
+            f"已生成待确认目标{project_text}：{title}。周期：{horizon_text}。"
+            "请在下方目标卡片中确认或忽略，确认后才会写入项目。"
+        )
+    if candidate_plans:
+        plan = candidate_plans[0]
+        title = str(plan.get("title") or "推进计划")
+        step_count = len(plan.get("steps") or [])
+        parts.append(
+            f"已生成待确认计划{project_text}：{title}，共 {step_count} 步。"
+            "请在下方计划卡片中点击“创建计划”或忽略，创建后才会进入项目计划列表。"
+        )
+    if pending_operations:
+        operation = pending_operations[0].get("operation") or {}
+        summary = str(operation.get("summary") or "待确认操作")
+        parts.append(
+            f"已生成待确认操作：{summary}。"
+            "请在下方操作卡片中点击“确认执行”或“拒绝”，确认前不会创建或执行。"
+        )
+    return "\n\n".join(parts)
 
 
 def _writer_input_debug(

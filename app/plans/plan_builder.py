@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -48,11 +49,14 @@ def _looks_like_long_task(text: str) -> bool:
 
 
 def _title_from_text(text: str) -> str:
+    quoted_goal = re.search(r"目标[「“\"]([^」”\"]+)[」”\"]", text)
+    if quoted_goal:
+        return f"{quoted_goal.group(1).strip()}推进计划"[:80]
     title = text
     for prefix in ["帮我", "请", "继续", "把"]:
         title = title.replace(prefix, "", 1).strip()
     title = title.replace("，", " ").replace(",", " ").strip()
-    return (title[:40] or "执行复杂任务计划").strip()
+    return (title[:80] or "执行复杂任务计划").strip()
 
 
 def _steps_for_text(text: str) -> list[dict[str, Any]]:

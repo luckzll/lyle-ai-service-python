@@ -88,7 +88,8 @@ def preview_todo_from_question(user_id: str, conversation_id: str | None, questi
     if not title:
         return {"ok": False, "content": "没有识别到待办内容。"}
     due_text = due_at.isoformat() if due_at else None
-    summary = f"创建待办「{title}」" + (f"，截止时间 {due_text}" if due_text else "，不设置截止时间")
+    due_summary = _format_local_datetime(due_at) if due_at else None
+    summary = f"创建待办「{title}」" + (f"，截止时间 {due_summary}" if due_summary else "，不设置截止时间")
     return create_pending_operation(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -164,7 +165,8 @@ def preview_calendar_event_from_question(user_id: str, conversation_id: str | No
     if not title:
         return {"ok": False, "content": "没有识别到日历事件内容。"}
     starts_text = starts_at.isoformat() if starts_at else None
-    summary = f"创建日程「{title}」" + (f"，开始时间 {starts_text}" if starts_text else "，不设置开始时间")
+    starts_summary = _format_local_datetime(starts_at) if starts_at else None
+    summary = f"创建日程「{title}」" + (f"，开始时间 {starts_summary}" if starts_summary else "，不设置开始时间")
     return create_pending_operation(
         user_id=user_id,
         conversation_id=conversation_id,
@@ -183,6 +185,14 @@ def _cleanup_title(question: str, prefixes: list[str]) -> str:
         title = title.replace(prefix, "")
     title = re.sub(r"^(：|:|，|,|\s)+", "", title).strip()
     return _strip_leading_datetime_phrase(title)[:200]
+
+
+def _format_local_datetime(value: datetime) -> str:
+    local_value = value.astimezone(LOCAL_TIMEZONE)
+    return (
+        f"{local_value.year}/{local_value.month}/{local_value.day} "
+        f"{local_value.hour:02d}:{local_value.minute:02d}:{local_value.second:02d}（北京时间）"
+    )
 
 
 def _find_open_duplicate_todo(conn, user_id: str, title: str) -> dict[str, object] | None:

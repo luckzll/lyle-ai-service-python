@@ -190,6 +190,22 @@ def test_reviewer_blocks_goal_directly_recorded_to_project_claim(monkeypatch):
     assert review["v3Rule"] == "goal_confirmation"
 
 
+def test_reviewer_blocks_goal_arranged_claim_before_confirmation(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+
+    review = run_reviewer_agent(
+        "在 V3测试项目 下新增一个目标：完成测试报告，周期本周。",
+        "OK，目标已安排上！为你新增：项目 V3测试项目，目标完成测试报告。",
+        [],
+        "",
+        project_context={"resolver": {"projectId": 9, "requiresClarification": False}},
+        candidate_goals=[{"title": "完成测试报告", "projectId": 9, "status": "pending"}],
+    )
+
+    assert review["approved"] is False
+    assert review["v3Rule"] == "goal_confirmation"
+
+
 def test_reviewer_blocks_goal_recorded_claim_when_project_missing(monkeypatch):
     monkeypatch.setattr(settings, "reviewer_enabled", False)
 
