@@ -281,57 +281,20 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     review.get("skipped"),
                     review.get("approved"),
                 )
+                rewrite_suppressed = (
+                    not used_v3_preview
+                    and not review.get("approved", True)
+                    and settings.reviewer_max_retry >= 1
+                )
                 agent_trace.append({
                     "agent": "reviewer_agent",
                     "approved": review.get("approved"),
                     "score": review.get("score"),
                     "skipped": review.get("skipped", False),
                     "streaming": True,
+                    "rewriteSuppressed": rewrite_suppressed,
+                    "rewriteSuppressedReason": "streaming_response_already_sent" if rewrite_suppressed else "",
                 })
-
-                if not used_v3_preview and not review.get("approved", True) and settings.reviewer_max_retry >= 1:
-                    rewritten_answer = []
-                    rewrite_prompt = (
-                        f"{request.message}\n\n"
-                        "上一次回答没有通过审核，请根据以下审核意见重新回答：\n"
-                        f"{review.get('rewrite_instruction') or review.get('reason') or ''}"
-                    )
-                    yield _sse("delta", {"text": "\n\n"})
-                    for chunk in stream_answer(rewrite_prompt, contexts, combined_context):
-                        rewritten_answer.append(chunk)
-                        yield _sse("delta", {"text": chunk})
-                    answer = "".join(rewritten_answer)
-                    final_answer = _append_tool_artifacts(answer, state.get("tool_results") or [])
-                    artifact_text = final_answer[len(answer):]
-                    if artifact_text:
-                        answer = final_answer
-                        yield _sse("delta", {"text": artifact_text})
-                    agent_trace.append({
-                        "agent": "writer_agent",
-                        "answerChars": len(answer),
-                        "rewriteAttempt": 1,
-                        "streaming": True,
-                        "writerInput": writer_input,
-                    })
-                    review = run_reviewer_agent(
-                        request.message,
-                        answer,
-                        contexts,
-                        memory_context,
-                        memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
-                        rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
-                        tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
-                        project_context=project_context,
-                        candidate_goals=project_candidates["candidateGoals"],
-                        candidate_plans=candidate_plans,
-                    )
-                    agent_trace.append({
-                        "agent": "reviewer_agent",
-                        "approved": review.get("approved"),
-                        "score": review.get("score"),
-                        "skipped": review.get("skipped", False),
-                        "streaming": True,
-                    })
 
                 # 记忆写入延迟到响应结束后执行（见 StreamingResponse 的 background 参数）。
                 final_answer_holder["answer"] = answer
