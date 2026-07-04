@@ -119,7 +119,7 @@ def update_goal(user_id: str, goal_id: int, payload: dict[str, Any]) -> dict[str
 
 def create_milestone(user_id: str, goal_id: int, payload: dict[str, Any]) -> dict[str, Any]:
     _ensure_postgres()
-    get_goal(user_id, goal_id)
+    _ensure_goal_exists(user_id, goal_id)
     title = _required_text(payload.get("title"), "里程碑标题不能为空。")[:256]
     description = _optional_text(payload.get("description"))
     status = _status(payload.get("status"), {"pending", "active", "completed", "skipped"}, "pending")
@@ -140,7 +140,7 @@ def create_milestone(user_id: str, goal_id: int, payload: dict[str, Any]) -> dic
 
 def list_milestones(user_id: str, goal_id: int) -> list[dict[str, Any]]:
     _ensure_postgres()
-    get_goal(user_id, goal_id)
+    _ensure_goal_exists(user_id, goal_id)
     with postgres_connection() as conn:
         rows = conn.execute(
             """
@@ -156,7 +156,7 @@ def list_milestones(user_id: str, goal_id: int) -> list[dict[str, Any]]:
 
 def link_task_to_goal(user_id: str, goal_id: int, task_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     _ensure_postgres()
-    get_goal(user_id, goal_id)
+    _ensure_goal_exists(user_id, goal_id)
     payload = payload or {}
     milestone_id = _optional_int(payload.get("milestoneId") or payload.get("milestone_id"))
     relation = (_optional_text(payload.get("relation")) or "contributes_to")[:64]
@@ -192,6 +192,16 @@ def link_task_to_goal(user_id: str, goal_id: int, task_id: str, payload: dict[st
 
 def _goal_with_milestones(user_id: str, goal: dict[str, Any]) -> dict[str, Any]:
     return {**goal, "milestones": list_milestones(user_id, int(goal["id"]))}
+
+
+def _ensure_goal_exists(user_id: str, goal_id: int) -> None:
+    with postgres_connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM goal WHERE user_id = %s AND id = %s",
+            (user_id, goal_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="目标不存在。")
 
 
 def _goal_row(row: Any) -> dict[str, Any]:
