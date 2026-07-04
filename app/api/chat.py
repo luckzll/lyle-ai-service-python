@@ -86,7 +86,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         *(result.get("agent_trace") or []),
         {"agent": "memory_agent", "action": "write", "deferred": True},
     ]
-    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message)
+    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
     if project_context:
         agent_trace.append({
             "agent": "project_resolver",
@@ -153,7 +153,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         [item.get("agent") for item in state.get("agent_trace", []) if isinstance(item, dict)],
     )
     contexts = state.get("contexts") or []
-    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message)
+    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
     combined_context = "\n\n".join(
@@ -395,8 +395,8 @@ def _friendly_stream_error(exc: Exception) -> str:
     return "模型服务暂时不可用，请稍后重试。"
 
 
-def _project_context_for_response(user_id: str, conversation_id: str | None, message: str) -> dict[str, object]:
-    resolver = resolve_project(user_id, conversation_id, message)
+def _project_context_for_response(user_id: str, conversation_id: str | None, message: str, project_id: int | None = None) -> dict[str, object]:
+    resolver = resolve_project(user_id, conversation_id, message, project_id)
     project_id = resolver.get("projectId")
     context = build_project_context(user_id, int(project_id)) if project_id else {}
     return {

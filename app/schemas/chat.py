@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 class ChatRequest(BaseModel):
     user_id: str = Field(alias="userId")
     conversation_id: str | None = Field(default=None, alias="conversationId")
+    project_id: int | None = Field(default=None, alias="projectId")
     message: str
     knowledge_base_ids: list[str] = Field(default_factory=list, alias="knowledgeBaseIds")
     stream: bool = False

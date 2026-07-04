@@ -275,6 +275,23 @@ def test_explicit_todo_rule_skips_llm_tool_router(monkeypatch):
     assert decision["router"] == "rule"
 
 
+def test_project_goal_write_skips_todo_tool_router(monkeypatch):
+    from app.agents.tool_agent import decide_tool_use
+
+    monkeypatch.setattr(settings, "tool_agent_enabled", True)
+    monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
+
+    def fail_route(question: str, context: str = ""):
+        raise AssertionError("project goal writes should not call LLM tool router")
+
+    monkeypatch.setattr("app.agents.tool_agent.route_tools_with_llm", fail_route)
+
+    decision = decide_tool_use("u1", "c1", "在 T2测试项目 下新增一个目标：完成测试报告，周期本周", True)
+
+    assert decision["should_call_tools"] is False
+    assert decision["router"] == "v3_project_guard"
+
+
 def test_tool_agent_keeps_original_question_for_calendar(monkeypatch):
     from app.agents.tool_agent import run_tool_agent
 

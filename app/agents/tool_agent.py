@@ -60,6 +60,16 @@ def decide_tool_use(
             "tool_inputs": {},
             "reason": "Supervisor 未激活工具调用。",
         }
+    if not rule_selected_tools and _looks_like_project_goal_write(question):
+        return {
+            "should_call_tools": False,
+            "selected_tools": [],
+            "tool_inputs": {},
+            "reason": "项目目标写入由 V3 目标候选确认承接，跳过待办工具路由。",
+            "router": "v3_project_guard",
+            "confidence": 1.0,
+            "needs_clarification": False,
+        }
     if rule_selected_tools and _can_skip_llm_router(rule_selected_tools):
         return {
             "should_call_tools": True,
@@ -164,6 +174,14 @@ def _decision_confidence(router_decision: dict[str, object]) -> float:
         return float(router_decision.get("confidence", 0.75))
     except (TypeError, ValueError):
         return 0.75
+
+
+def _looks_like_project_goal_write(question: str) -> bool:
+    return (
+        any(keyword in question for keyword in ["新增目标", "记录目标", "添加目标", "创建目标", "目标：", "目标:"])
+        and any(keyword in question for keyword in ["项目", "project", "版本"])
+        and not any(keyword in question for keyword in ["创建待办", "加个待办", "待办", "todo", "提醒我", "记得提醒我"])
+    )
 
 
 def _tool_question(tool_name: str, question: str, tool_inputs: object) -> str:

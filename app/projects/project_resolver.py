@@ -2,11 +2,48 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.projects.project_store import create_project_link, list_projects
+from app.projects.project_store import create_project_link, get_project, list_projects
 
 
-def resolve_project(user_id: str, conversation_id: str | None, user_input: str) -> dict[str, Any]:
+def resolve_project(user_id: str, conversation_id: str | None, user_input: str, project_id: int | None = None) -> dict[str, Any]:
     text = (user_input or "").lower()
+    if project_id is not None:
+        try:
+            project = get_project(user_id, project_id)
+        except Exception as exc:
+            return {
+                "projectId": None,
+                "projectName": "",
+                "confidence": 0.0,
+                "requiresClarification": True,
+                "reason": f"explicit_project_unavailable:{type(exc).__name__}",
+            }
+        result = {
+            "projectId": project["id"],
+            "projectName": project["name"],
+            "confidence": 1.0,
+            "requiresClarification": False,
+            "reason": "当前项目页显式指定项目",
+            "candidates": [{"projectId": project["id"], "projectName": project["name"], "confidence": 1.0}],
+        }
+        if conversation_id:
+            try:
+                create_project_link(
+                    user_id,
+                    int(project["id"]),
+                    {
+                        "targetType": "conversation",
+                        "targetId": conversation_id,
+                        "relation": "current_context",
+                        "confidence": 1.0,
+                    },
+                )
+                result["linkedConversation"] = True
+            except Exception as exc:
+                result["linkedConversation"] = False
+                result["linkError"] = type(exc).__name__
+        return result
+
     try:
         projects = list_projects(user_id, status="active", limit=50)
     except Exception as exc:
