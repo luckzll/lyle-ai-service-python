@@ -160,10 +160,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), list) else []
-    has_work_summary_tool = any(
-        isinstance(item, dict) and item.get("tool") == "work_summary" and item.get("ok")
-        for item in tool_results
-    )
+    has_work_summary_tool = _has_successful_tool(tool_results, "work_summary")
+    effective_memory_context = "" if has_work_summary_tool else memory_context
     confirmation_guidance = _v3_confirmation_guidance(
         project_candidates["candidateGoals"],
         candidate_plans,
@@ -171,12 +169,19 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     )
     combined_context = "\n\n".join(
         item for item in [
-            "" if has_work_summary_tool else memory_context,
+            effective_memory_context,
             tool_context,
             confirmation_guidance,
         ] if item
     )
-    writer_input = _writer_input_debug(memory_context, tool_context, contexts, combined_context)
+    writer_input = _writer_input_debug(
+        effective_memory_context,
+        tool_context,
+        contexts,
+        combined_context,
+        excluded_memory_context_chars=len(memory_context) if has_work_summary_tool else 0,
+        memory_exclusion_reason="work_summary_tool_takes_priority" if has_work_summary_tool else "",
+    )
 
     final_answer_holder: dict[str, str] = {}
 
@@ -438,6 +443,13 @@ def _friendly_stream_error(exc: Exception) -> str:
     return "模型服务暂时不可用，请稍后重试。"
 
 
+def _has_successful_tool(tool_results: list[dict[str, object]], tool_name: str) -> bool:
+    return any(
+        isinstance(item, dict) and item.get("tool") == tool_name and item.get("ok")
+        for item in tool_results
+    )
+
+
 def _review_blocked_answer(review: dict[str, object]) -> str:
     reason = str(review.get("reason") or "").strip()
     if not reason:
@@ -557,10 +569,14 @@ def _writer_input_debug(
     tool_context: str,
     contexts: list[dict[str, str]],
     combined_context: str,
+    excluded_memory_context_chars: int = 0,
+    memory_exclusion_reason: str = "",
 ) -> dict[str, object]:
     return {
         "memoryContextChars": len(memory_context),
         "memoryContext": _clip(memory_context, 6000),
+        "excludedMemoryContextChars": excluded_memory_context_chars,
+        "memoryExclusionReason": memory_exclusion_reason,
         "toolContextChars": len(tool_context),
         "toolContext": _clip(tool_context, 6000),
         "ragContextCount": len(contexts),

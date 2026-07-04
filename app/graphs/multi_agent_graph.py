@@ -150,15 +150,19 @@ def rag_agent_node(state: MultiAgentState) -> MultiAgentState:
 
 def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
+    has_work_summary_tool = _has_successful_tool(state["tool_results"], "work_summary")
+    memory_context = "" if has_work_summary_tool else state["memory_context"]
     writer_input = _writer_input_debug(
-        state["memory_context"],
+        memory_context,
         state["tool_context"],
         state["contexts"],
+        excluded_memory_context_chars=len(state["memory_context"]) if has_work_summary_tool else 0,
+        memory_exclusion_reason="work_summary_tool_takes_priority" if has_work_summary_tool else "",
     )
     answer = run_writer_agent(
         state["question"],
         state["contexts"],
-        state["memory_context"],
+        memory_context,
         state["tool_context"],
         state["review_feedback"],
     )
@@ -482,11 +486,15 @@ def _writer_input_debug(
     memory_context: str,
     tool_context: str,
     contexts: list[dict[str, str]],
+    excluded_memory_context_chars: int = 0,
+    memory_exclusion_reason: str = "",
 ) -> dict[str, object]:
     combined_context = "\n\n".join(item for item in [memory_context, tool_context] if item)
     return {
         "memoryContextChars": len(memory_context),
         "memoryContext": _preview(memory_context, 6000),
+        "excludedMemoryContextChars": excluded_memory_context_chars,
+        "memoryExclusionReason": memory_exclusion_reason,
         "toolContextChars": len(tool_context),
         "toolContext": _preview(tool_context, 6000),
         "ragContextCount": len(contexts),
@@ -500,3 +508,10 @@ def _writer_input_debug(
         "combinedContextChars": len(combined_context),
         "combinedContext": _preview(combined_context, 10000),
     }
+
+
+def _has_successful_tool(tool_results: list[dict[str, object]], tool_name: str) -> bool:
+    return any(
+        isinstance(item, dict) and item.get("tool") == tool_name and item.get("ok")
+        for item in tool_results
+    )
