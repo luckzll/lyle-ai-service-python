@@ -159,14 +159,19 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     candidate_plans = [plan_candidate] if plan_candidate else []
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), list) else []
+    has_work_summary_tool = any(
+        isinstance(item, dict) and item.get("tool") == "work_summary" and item.get("ok")
+        for item in tool_results
+    )
     confirmation_guidance = _v3_confirmation_guidance(
         project_candidates["candidateGoals"],
         candidate_plans,
-        state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+        tool_results,
     )
     combined_context = "\n\n".join(
         item for item in [
-            memory_context,
+            "" if has_work_summary_tool else memory_context,
             tool_context,
             confirmation_guidance,
         ] if item
@@ -195,13 +200,12 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     answer = image_answer
                     answer_parts.append(answer)
                     logger.info(
-                        "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=image_answer",
+                        "chat_stream timing answer_prepared. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=image_answer",
                         request.user_id,
                         request.conversation_id,
                         perf_counter() - stream_started,
                         perf_counter() - request_started,
                     )
-                    yield _sse("delta", {"text": answer})
                 else:
                     preview_answer = _v3_preview_answer(
                         project_candidates["candidateGoals"],
@@ -214,28 +218,16 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         answer = preview_answer
                         answer_parts.append(answer)
                         logger.info(
-                            "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=v3_preview",
+                            "chat_stream timing answer_prepared. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=v3_preview",
                             request.user_id,
                             request.conversation_id,
                             perf_counter() - stream_started,
                             perf_counter() - request_started,
                         )
-                        yield _sse("delta", {"text": answer})
                     else:
                         writer_started = perf_counter()
-                        first_delta_sent = False
                         for chunk in stream_answer(request.message, contexts, combined_context):
                             answer_parts.append(chunk)
-                            if not first_delta_sent:
-                                first_delta_sent = True
-                                logger.info(
-                                    "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=writer",
-                                    request.user_id,
-                                    request.conversation_id,
-                                    perf_counter() - writer_started,
-                                    perf_counter() - request_started,
-                                )
-                            yield _sse("delta", {"text": chunk})
                         logger.info(
                             "chat_stream timing writer_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs chunks=%s chars=%s",
                             request.user_id,
@@ -251,7 +243,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         artifact_text = final_answer[len(answer):]
                         if artifact_text:
                             answer = final_answer
-                            yield _sse("delta", {"text": artifact_text})
                 agent_trace.append({
                     "agent": "writer_agent",
                     "answerChars": len(answer),
@@ -281,20 +272,81 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     review.get("skipped"),
                     review.get("approved"),
                 )
-                rewrite_suppressed = (
-                    not used_v3_preview
-                    and not review.get("approved", True)
-                    and settings.reviewer_max_retry >= 1
-                )
                 agent_trace.append({
                     "agent": "reviewer_agent",
                     "approved": review.get("approved"),
                     "score": review.get("score"),
                     "skipped": review.get("skipped", False),
                     "streaming": True,
-                    "rewriteSuppressed": rewrite_suppressed,
-                    "rewriteSuppressedReason": "streaming_response_already_sent" if rewrite_suppressed else "",
                 })
+
+                if not used_v3_preview and not review.get("approved", True) and settings.reviewer_max_retry >= 1:
+                    rewritten_answer = []
+                    rewrite_prompt = (
+                        f"{request.message}\n\n"
+                        "上一次回答没有通过审核，请根据以下审核意见重新回答：\n"
+                        f"{review.get('rewrite_instruction') or review.get('reason') or ''}"
+                    )
+                    rewrite_started = perf_counter()
+                    for chunk in stream_answer(rewrite_prompt, contexts, combined_context):
+                        rewritten_answer.append(chunk)
+                    answer = "".join(rewritten_answer)
+                    final_answer = _append_tool_artifacts(answer, state.get("tool_results") or [])
+                    if final_answer != answer:
+                        answer = final_answer
+                    agent_trace.append({
+                        "agent": "writer_agent",
+                        "answerChars": len(answer),
+                        "rewriteAttempt": 1,
+                        "streaming": True,
+                        "bufferedUntilReview": True,
+                        "writerInput": writer_input,
+                    })
+                    review = run_reviewer_agent(
+                        request.message,
+                        answer,
+                        contexts,
+                        memory_context,
+                        memory=state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                        rag_sufficiency=state.get("rag_sufficiency") if isinstance(state.get("rag_sufficiency"), dict) else {},
+                        tool_results=state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+                        project_context=project_context,
+                        candidate_goals=project_candidates["candidateGoals"],
+                        candidate_plans=candidate_plans,
+                    )
+                    logger.info(
+                        "chat_stream timing rewrite_review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs approved=%s",
+                        request.user_id,
+                        request.conversation_id,
+                        perf_counter() - rewrite_started,
+                        perf_counter() - request_started,
+                        review.get("approved"),
+                    )
+                    agent_trace.append({
+                        "agent": "reviewer_agent",
+                        "approved": review.get("approved"),
+                        "score": review.get("score"),
+                        "skipped": review.get("skipped", False),
+                        "streaming": True,
+                    })
+
+                if not review.get("approved", True):
+                    answer = _review_blocked_answer(review)
+                    agent_trace.append({
+                        "agent": "writer_agent",
+                        "action": "quality_blocked",
+                        "answerChars": len(answer),
+                        "streaming": True,
+                    })
+
+                logger.info(
+                    "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=review_gated",
+                    request.user_id,
+                    request.conversation_id,
+                    perf_counter() - stream_started,
+                    perf_counter() - request_started,
+                )
+                yield _sse("delta", {"text": answer})
 
                 # 记忆写入延迟到响应结束后执行（见 StreamingResponse 的 background 参数）。
                 final_answer_holder["answer"] = answer
@@ -384,6 +436,17 @@ def _friendly_stream_error(exc: Exception) -> str:
     if "rate" in lowered or "429" in lowered:
         return "模型服务当前限流了，请稍后再试。"
     return "模型服务暂时不可用，请稍后重试。"
+
+
+def _review_blocked_answer(review: dict[str, object]) -> str:
+    reason = str(review.get("reason") or "").strip()
+    if not reason:
+        reason = "回答没有通过质量检查"
+    return (
+        "这次回答被质量检查拦截了，所以我没有把未通过的版本发出来。\n\n"
+        f"原因：{reason}\n\n"
+        "你可以换个更明确的问题再试一次，或者打开调试信息查看 reviewer 的具体判断。"
+    )
 
 
 def _project_context_for_response(user_id: str, conversation_id: str | None, message: str, project_id: int | None = None) -> dict[str, object]:

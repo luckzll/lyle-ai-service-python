@@ -16,7 +16,7 @@ def run_reviewer_agent(
     candidate_goals: list[dict[str, object]] | None = None,
     candidate_plans: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    rule_review = _rule_memory_governance_review(answer, memory or {})
+    rule_review = _rule_memory_governance_review(answer, memory or {}, tool_results or [])
     if not rule_review["approved"]:
         return rule_review
     rag_review = _rule_rag_grounding_review(question, answer, contexts, rag_sufficiency or {})
@@ -50,8 +50,13 @@ def run_reviewer_agent(
     }
 
 
-def _rule_memory_governance_review(answer: str, memory: dict[str, object]) -> dict[str, object]:
+def _rule_memory_governance_review(
+    answer: str,
+    memory: dict[str, object],
+    tool_results: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
     governance = memory.get("governance") if isinstance(memory.get("governance"), dict) else {}
+    tool_results = tool_results or []
     blocked_terms = governance.get("blockedTerms") if isinstance(governance, dict) else []
     for item in blocked_terms if isinstance(blocked_terms, list) else []:
         if not isinstance(item, dict):
@@ -59,6 +64,8 @@ def _rule_memory_governance_review(answer: str, memory: dict[str, object]) -> di
         value = str(item.get("value") or "").strip()
         if value and value in answer:
             status = str(item.get("status") or "blocked")
+            if status in {"disabled", "forgotten"} and _value_supported_by_tool_results(value, tool_results):
+                continue
             return {
                 "approved": False,
                 "score": 0.1,
@@ -90,6 +97,17 @@ def _rule_memory_governance_review(answer: str, memory: dict[str, object]) -> di
         "rewrite_instruction": "",
         "skipped": True,
     }
+
+
+def _value_supported_by_tool_results(value: str, tool_results: list[dict[str, object]]) -> bool:
+    if not value or not tool_results:
+        return False
+    for item in tool_results:
+        if not isinstance(item, dict) or not item.get("ok"):
+            continue
+        if value in str(item.get("content") or ""):
+            return True
+    return False
 
 
 def _has_cautious_language(answer: str, value: str) -> bool:

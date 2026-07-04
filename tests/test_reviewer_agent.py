@@ -22,6 +22,35 @@ def test_reviewer_blocks_answer_that_mentions_forgotten_memory(monkeypatch):
     assert "已治理记忆" in review["reason"]
 
 
+def test_reviewer_allows_disabled_memory_term_when_supported_by_tool_result(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "governance": {
+            "blockedTerms": [{
+                "value": "产品定位文档",
+                "status": "disabled",
+                "schemaPath": "goals.current",
+            }],
+            "lowConfidenceTerms": [],
+        }
+    }
+
+    review = run_reviewer_agent(
+        "汇总我的任务",
+        "本周待办包括产品定位文档。",
+        [],
+        "",
+        memory=memory,
+        tool_results=[{
+            "tool": "work_summary",
+            "ok": True,
+            "content": "本周到期：产品定位文档",
+        }],
+    )
+
+    assert review["approved"] is True
+
+
 def test_reviewer_blocks_uncautious_low_confidence_memory(monkeypatch):
     monkeypatch.setattr(settings, "reviewer_enabled", False)
     memory = {
