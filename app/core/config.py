@@ -125,6 +125,8 @@ class Settings(BaseSettings):
     # 后台记忆衰减：开启后会周期性把长期未使用画像的有效置信度写回，并过期极低置信度画像。
     memory_decay_worker_enabled: bool = True
     memory_decay_worker_interval_seconds: int = 3600
+    automation_worker_enabled: bool = True
+    automation_worker_interval_seconds: int = 60
 
     # ===== Prompt / 安全 / 日志 / 限流 =====
     # Prompt 版本号，方便后续灰度、评测和排查。

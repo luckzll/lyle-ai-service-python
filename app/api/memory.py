@@ -7,12 +7,13 @@ from app.memory.store import (
     get_structured_memory_history,
     get_structured_memory_merge_suggestions,
     purge_structured_memory,
+    set_profile_memory_status,
     set_structured_memory_status,
     upsert_structured_memory,
 )
 from app.memory.evidence_store import list_profile_evidence
 from app.memory.fragments import list_memory_fragments, set_memory_fragment_status
-from app.memory.profile_store import list_user_profiles, set_user_profile_status
+from app.memory.profile_store import list_user_profiles
 
 router = APIRouter()
 
@@ -65,7 +66,7 @@ def change_profile_status(
     schema_path: str,
     request: MemoryStatusRequest,
 ) -> dict[str, object]:
-    return set_user_profile_status(user_id, schema_path, request.status)
+    return set_profile_memory_status(user_id, schema_path, request.status)
 
 
 @router.patch("/memory/{user_id}/fragments/{fragment_id}/status")

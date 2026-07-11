@@ -36,6 +36,7 @@ def test_extract_candidate_tasks_from_commitment():
 
 def test_preview_todo_from_question_requires_confirmation(monkeypatch):
     captured = {}
+    fixed_due_at = datetime(2026, 7, 5, 7, 0, tzinfo=UTC)
 
     def fake_create_pending_operation(**kwargs):
         captured.update(kwargs)
@@ -46,6 +47,7 @@ def test_preview_todo_from_question_requires_confirmation(monkeypatch):
         }
 
     monkeypatch.setattr(task_tool, "create_pending_operation", fake_create_pending_operation)
+    monkeypatch.setattr(task_tool, "_extract_datetime", lambda _question: fixed_due_at)
 
     result = preview_todo_from_question("u1", "c1", "帮我创建待办 明天下午三点提交周报")
 

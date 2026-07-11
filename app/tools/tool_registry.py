@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import settings
 from app.core.database import postgres_connection
+from app.memory.overview import is_memory_overview_question
 from app.memory.store import export_memory
 from app.rag.reranker import get_reranker_status
 from app.tools.risk_policy import ToolRiskPolicy, get_tool_risk_policy
@@ -46,9 +47,10 @@ def list_available_tools() -> list[dict[str, object]]:
 def select_tools(question: str) -> list[str]:
     lowered = question.lower()
     selected: list[str] = []
+    memory_overview = is_memory_overview_question(question)
     if any(keyword in question for keyword in ["健康", "状态", "检查服务", "服务检查"]) or "health" in lowered:
         selected.append("health_check")
-    if any(keyword in question for keyword in ["查看记忆", "记忆快照", "我的记忆", "当前记忆"]):
+    if memory_overview or any(keyword in question for keyword in ["查看记忆", "记忆快照", "我的记忆", "当前记忆"]):
         selected.append("memory_snapshot")
     if any(keyword in question for keyword in ["记忆统计", "记忆数量", "数据库统计", "统计记忆"]):
         selected.append("memory_stats")
@@ -83,7 +85,7 @@ def select_tools(question: str) -> list[str]:
         "当前项目",
         "本周安排",
     ]
-    if any(keyword in question for keyword in work_summary_keywords):
+    if memory_overview or any(keyword in question for keyword in work_summary_keywords):
         selected.append("work_summary")
     if any(keyword in question for keyword in ["天气", "气温", "温度", "下雨", "下雪"]) or "weather" in lowered:
         selected.append("weather")

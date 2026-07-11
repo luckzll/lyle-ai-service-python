@@ -12,12 +12,14 @@ from app.core.config import settings
 from app.agents.reviewer_agent import run_reviewer_agent
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
 from app.llm.client import stream_answer
-from app.memory.store import remember_interaction
+from app.memory.store import extract_structured_memory, remember_interaction
+from app.memory.overview import build_memory_overview_answer
 from app.plans.plan_builder import build_plan_candidate
 from app.projects.candidate_extractor import extract_project_candidates
 from app.projects.project_context_builder import build_project_context
 from app.projects.project_resolver import resolve_project
 from app.schemas.chat import ChatRequest, ChatResponse, Source, Usage
+from app.workflows.chat_suggestions import build_execution_suggestions
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
 
@@ -31,12 +33,19 @@ def write_memory_in_background(
     question: str,
     answer: str,
     ai_config: dict[str, str] | None = None,
+    structured_candidates_prepared: bool = False,
 ) -> None:
     """在 HTTP 响应返回后执行记忆写入（结构化抽取 / 摘要压缩 / 向量写入），不阻塞用户。"""
     started = perf_counter()
     try:
         with temporary_ai_config(ai_config):
-            write_result = remember_interaction(user_id, conversation_id, question, answer)
+            write_result = remember_interaction(
+                user_id,
+                conversation_id,
+                question,
+                answer,
+                extract_candidates=not structured_candidates_prepared,
+            )
         logger.info(
             "Background memory write done. user_id=%s conversation_id=%s elapsed=%.3fs candidate_memories=%s",
             user_id,
@@ -74,6 +83,13 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             _strip_unbacked_image_markdown(result.get("answer") or "", tool_results),
             tool_results,
         )
+    candidate_memories = _prepare_candidate_memories_for_response(
+        request.user_id,
+        request.conversation_id,
+        request.message,
+        request.ai_config,
+    )
+    answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
     background_tasks.add_task(
         write_memory_in_background,
         request.user_id,
@@ -81,10 +97,16 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         request.message,
         answer,
         request.ai_config,
+        True,
     )
     agent_trace = [
         *(result.get("agent_trace") or []),
-        {"agent": "memory_agent", "action": "write", "deferred": True},
+        {
+            "agent": "memory_agent",
+            "action": "candidate_ready",
+            "candidateCount": len(candidate_memories),
+            "backgroundWriteDeferred": True,
+        },
     ]
     project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
     if project_context:
@@ -115,12 +137,13 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         usage=Usage(promptTokens=0, completionTokens=0),
         agentTrace=agent_trace,
         toolResults=tool_results,
-        candidateMemories=[],
+        candidateMemories=candidate_memories,
         candidateTasks=_candidate_tasks_for_response(request.message, tool_results),
         candidateGoals=project_candidates["candidateGoals"],
         candidateDecisions=project_candidates["candidateDecisions"],
         candidateOpenQuestions=project_candidates["candidateOpenQuestions"],
         candidatePlans=[plan_candidate] if plan_candidate else [],
+        executionSuggestions=build_execution_suggestions(request.user_id, request.message),
         projectContext=project_context,
         review=result.get("review") or {},
     )
@@ -189,6 +212,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         stream_started = perf_counter()
         answer_parts = []
         used_v3_preview = False
+        used_memory_overview = False
         agent_trace = list(state.get("agent_trace") or [])
         if project_context:
             agent_trace.append({
@@ -200,8 +224,24 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         review: dict[str, object] = {"approved": True, "reason": "streaming mode"}
         try:
             with temporary_ai_config(request.ai_config):
-                image_answer = _image_generate_answer(request.message, state.get("tool_results") or [])
-                if image_answer is not None:
+                overview_answer = build_memory_overview_answer(
+                    request.message,
+                    state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                    state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
+                )
+                image_answer = None if overview_answer else _image_generate_answer(request.message, state.get("tool_results") or [])
+                if overview_answer:
+                    used_memory_overview = True
+                    answer = overview_answer
+                    answer_parts.append(answer)
+                    logger.info(
+                        "chat_stream timing answer_prepared. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=memory_overview",
+                        request.user_id,
+                        request.conversation_id,
+                        perf_counter() - stream_started,
+                        perf_counter() - request_started,
+                    )
+                elif image_answer is not None:
                     answer = image_answer
                     answer_parts.append(answer)
                     logger.info(
@@ -248,11 +288,19 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         artifact_text = final_answer[len(answer):]
                         if artifact_text:
                             answer = final_answer
+                candidate_memories = _prepare_candidate_memories_for_response(
+                    request.user_id,
+                    request.conversation_id,
+                    request.message,
+                    request.ai_config,
+                )
+                answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
                 agent_trace.append({
                     "agent": "writer_agent",
                     "answerChars": len(answer),
                     "rewriteAttempt": 0,
                     "streaming": True,
+                    "deterministicMemoryOverview": used_memory_overview,
                     "writerInput": writer_input,
                 })
                 review_started = perf_counter()
@@ -285,7 +333,12 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "streaming": True,
                 })
 
-                if not used_v3_preview and not review.get("approved", True) and settings.reviewer_max_retry >= 1:
+                if (
+                    not used_v3_preview
+                    and not used_memory_overview
+                    and not review.get("approved", True)
+                    and settings.reviewer_max_retry >= 1
+                ):
                     rewritten_answer = []
                     rewrite_prompt = (
                         f"{request.message}\n\n"
@@ -344,6 +397,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         "streaming": True,
                     })
 
+                # A reviewer rewrite must not reintroduce a false persistence claim.
+                answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
                 logger.info(
                     "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=review_gated",
                     request.user_id,
@@ -357,8 +412,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 final_answer_holder["answer"] = answer
                 agent_trace.append({
                     "agent": "memory_agent",
-                    "action": "write",
-                    "deferred": True,
+                    "action": "candidate_ready",
+                    "candidateCount": len(candidate_memories),
+                    "backgroundWriteDeferred": True,
                 })
                 meta = {
                     "sources": [
@@ -378,12 +434,13 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     ],
                     "agentTrace": agent_trace,
                     "toolResults": state.get("tool_results") or [],
-                    "candidateMemories": [],
+                    "candidateMemories": candidate_memories,
                     "candidateTasks": _candidate_tasks_for_response(request.message, state.get("tool_results") or []),
                     "candidateGoals": project_candidates["candidateGoals"],
                     "candidateDecisions": project_candidates["candidateDecisions"],
                     "candidateOpenQuestions": project_candidates["candidateOpenQuestions"],
                     "candidatePlans": candidate_plans,
+                    "executionSuggestions": build_execution_suggestions(request.user_id, request.message),
                     "projectContext": project_context,
                     "review": review,
                 }
@@ -418,6 +475,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             request.message,
             answer,
             request.ai_config,
+            True,
         )
 
     return StreamingResponse(
@@ -429,6 +487,103 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 def _sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _prepare_candidate_memories_for_response(
+    user_id: str,
+    conversation_id: str | None,
+    question: str,
+    ai_config: dict[str, str] | None,
+) -> list[dict[str, object]]:
+    """Persist pending structured candidates before response metadata is emitted.
+
+    The remaining interaction write (turn buffer, compression and vector memory) stays
+    in the response background task. Pending candidates must be synchronous because a
+    completed HTTP/SSE response cannot be amended afterwards.
+    """
+    try:
+        with temporary_ai_config(ai_config):
+            if _looks_like_explicit_memory_statement(question):
+                candidates = extract_structured_memory(
+                    user_id,
+                    conversation_id,
+                    question,
+                    extraction_mode="rule",
+                )
+                # Deterministic rules are the reliable first line. The model remains a
+                # fallback for explicit facts that are outside the known rule schema.
+                if not candidates:
+                    candidates = extract_structured_memory(
+                        user_id,
+                        conversation_id,
+                        question,
+                        extraction_mode="llm",
+                    )
+            else:
+                candidates = extract_structured_memory(
+                    user_id,
+                    conversation_id,
+                    question,
+                )
+        logger.info(
+            "Candidate memories prepared for response. user_id=%s conversation_id=%s count=%s",
+            user_id,
+            conversation_id,
+            len(candidates),
+        )
+        return candidates
+    except Exception:
+        logger.exception(
+            "Candidate memory preparation failed. user_id=%s conversation_id=%s",
+            user_id,
+            conversation_id,
+        )
+        return []
+
+
+def _guard_unconfirmed_memory_claim(
+    question: str,
+    answer: str,
+    candidate_memories: list[dict[str, object]],
+) -> str:
+    if not _looks_like_explicit_memory_statement(question):
+        return answer
+
+    claims_saved = _answer_claims_memory_saved(answer)
+    if candidate_memories:
+        values = [str(item.get("value") or "").strip() for item in candidate_memories]
+        summary = "、".join(value for value in values if value)[:120]
+        notice = "我已整理成待确认记忆"
+        if summary:
+            notice += f"：{summary}"
+        notice += "。请在下方确认、修改或忽略；确认后才会写入长期记忆。"
+        if claims_saved or len(answer.strip()) <= 80:
+            return notice
+        if "待确认记忆" not in answer:
+            return f"{answer.rstrip()}\n\n{notice}"
+        return answer
+
+    if claims_saved:
+        return "我还没有生成可确认的记忆，因此这次不会写入长期记忆。请换一种更明确的表达后重试。"
+    return answer
+
+
+def _looks_like_explicit_memory_statement(question: str) -> bool:
+    compact = re.sub(r"\s+", "", question or "")
+    return any(marker in compact for marker in [
+        "请记住", "帮我记住", "记一下", "记下来", "以后记得",
+        "我不喜欢", "我讨厌", "我不爱", "我喜欢", "我现在是",
+        "我叫", "我的职业是", "我的工作是", "我的偏好是",
+    ])
+
+
+def _answer_claims_memory_saved(answer: str) -> bool:
+    compact = re.sub(r"\s+", "", answer or "")
+    return any(marker in compact for marker in [
+        "已记住", "已经记住", "我记住了", "记住了",
+        "已记下", "已经记下", "我记下了", "已记录下来",
+        "已写入记忆", "已保存到记忆", "已存入长期记忆",
+    ])
 
 
 def _friendly_stream_error(exc: Exception) -> str:

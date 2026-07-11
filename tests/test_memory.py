@@ -1,3 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
+from time import sleep
+
 from app.core.config import settings
 from app.memory import store as memory_store
 from app.memory import profile_store
@@ -8,6 +11,7 @@ from app.memory.store import (
     _merge_vector_memories,
     recall_memory,
     remember_interaction,
+    set_profile_memory_status,
     set_structured_memory_status,
     upsert_structured_memory,
     get_structured_memory_merge_suggestions,
@@ -59,6 +63,26 @@ def test_schema_path_maps_legacy_memory_keys_to_profile_paths():
     assert schema_path_for_memory("career", "产品经理方向") == "work.current_role"
     assert schema_path_for_memory("negative_preference", "帽子") == "preferences.visual.dislikes"
     assert schema_path_for_memory("food_preference", "西瓜") == "preferences.food.likes"
+
+
+def test_current_role_statement_has_deterministic_candidate(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+
+    result = remember_interaction(
+        "current-role-user",
+        "current-role-conversation",
+        "请记住：我现在是产品经理。",
+        "我会先生成待确认记忆。",
+    )
+
+    candidate = result["candidateMemories"][0]
+    assert candidate["targetKey"] == "career"
+    assert candidate["schemaPath"] == "work.current_role"
+    assert candidate["value"] == "产品经理"
 
 
 def test_candidate_memory_records_source_reference(monkeypatch):
@@ -222,6 +246,65 @@ def test_duplicate_pending_structured_memory_reuses_existing_candidate(monkeypat
 
     assert first_candidate["key"] == second_candidate["key"]
     assert len(pending_items) == 1
+
+
+def test_consumed_pending_candidate_does_not_become_a_blocked_memory(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    user_id = "consumed-pending-governance-user"
+    pending_key = "pending:accepted:negative_preference"
+
+    upsert_structured_memory(user_id, pending_key, "帽子", status="pending")
+    upsert_structured_memory(user_id, "preferences.visual.dislikes", "帽子", status="active", confidence=0.95)
+    set_structured_memory_status(user_id, pending_key, "disabled")
+
+    memory = recall_memory(user_id, "new-conversation", "你记得我什么？", include_vector=False)
+
+    assert any(ref["kind"] == "profile" and ref["id"] for ref in memory["recalled_refs"])
+    assert not any(item["value"] == "帽子" for item in memory["governance"]["blockedTerms"])
+
+
+def test_rejected_pending_candidate_remains_governed(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    user_id = "rejected-pending-governance-user"
+    pending_key = "pending:rejected:negative_preference"
+
+    upsert_structured_memory(user_id, pending_key, "帽子", status="pending")
+    set_structured_memory_status(user_id, pending_key, "disabled")
+
+    memory = recall_memory(user_id, "new-conversation", "你记得我什么？", include_vector=False)
+    blocked = next(item for item in memory["governance"]["blockedTerms"] if item["value"] == "帽子")
+
+    assert blocked["status"] == "disabled"
+    assert blocked["schemaPath"] == "preferences.visual.dislikes"
+    assert blocked["recordRef"] == {"kind": "candidate", "id": pending_key}
+
+
+def test_profile_governance_status_syncs_structured_and_fragments(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    user_id = "profile-governance-sync-user"
+
+    upsert_structured_memory(
+        user_id,
+        "preferences.visual.dislikes",
+        "帽子",
+        source="source_ref:conversation:source\n我不喜欢帽子",
+        status="active",
+    )
+    set_profile_memory_status(user_id, "preferences.visual.dislikes", "forgotten")
+    memory = export_memory(user_id, "new-conversation")
+
+    assert next(item for item in memory["structured_all"] if item["key"] == "preferences.visual.dislikes")["status"] == "forgotten"
+    assert next(item for item in memory["profiles"] if item["schemaPath"] == "preferences.visual.dislikes")["status"] == "forgotten"
+    assert next(item for item in memory["fragments"] if item["category"] == "preferences.visual.dislikes")["status"] == "forgotten"
 
 
 def test_merge_suggestions_include_duplicate_pending_memories(monkeypatch):
@@ -1252,6 +1335,37 @@ def test_milvus_search_loads_collection_before_query(monkeypatch):
 
     assert memory_store._search_milvus_memory("milvus-user", "我喜欢什么", 3) == []
     assert calls == [("load", "unit_milvus_memory"), ("search", "unit_milvus_memory")]
+
+
+def test_milvus_collection_initializes_once_under_concurrent_recall(monkeypatch):
+    factory_calls: list[bool] = []
+    load_calls: list[str] = []
+
+    class FakeMilvusClient:
+        def has_collection(self, name):
+            return True
+
+        def describe_collection(self, name):
+            return {"fields": [{"name": "vector", "params": {"dim": memory_store.EMBEDDING_DIMENSION}}]}
+
+        def load_collection(self, collection_name):
+            load_calls.append(collection_name)
+
+    def fake_client():
+        factory_calls.append(True)
+        sleep(0.02)
+        return FakeMilvusClient()
+
+    monkeypatch.setattr(memory_store, "_milvus_ready", False)
+    monkeypatch.setattr(memory_store, "_milvus_client", fake_client)
+    monkeypatch.setattr(settings, "milvus_collection", "concurrent_milvus_memory")
+    monkeypatch.setattr(settings, "recreate_vector_collections_on_dimension_mismatch", True)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        list(executor.map(lambda _: memory_store._ensure_milvus_collection(), range(8)))
+
+    assert len(factory_calls) == 1
+    assert load_calls == ["concurrent_milvus_memory"]
 
 
 def test_merge_vector_memories_can_rerank(monkeypatch):

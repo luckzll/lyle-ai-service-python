@@ -1,5 +1,6 @@
 from app.agents.reviewer_agent import run_reviewer_agent
 from app.core.config import settings
+from app.memory.overview import build_memory_overview_answer
 
 
 def test_reviewer_blocks_answer_that_mentions_forgotten_memory(monkeypatch):
@@ -20,6 +21,124 @@ def test_reviewer_blocks_answer_that_mentions_forgotten_memory(monkeypatch):
     assert review["approved"] is False
     assert review["ruleBlocked"] is True
     assert "已治理记忆" in review["reason"]
+
+
+def test_reviewer_allows_value_supported_by_recalled_active_profile_id(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "recalled_refs": [{
+            "kind": "profile",
+            "id": 42,
+            "schemaPath": "preferences.visual.dislikes",
+            "value": "帽子",
+            "status": "active",
+        }],
+        "governance": {
+            "blockedTerms": [{
+                "value": "帽子",
+                "status": "disabled",
+                "schemaPath": "preferences.visual.dislikes",
+                "source": "candidate",
+                "recordRef": {"kind": "candidate", "id": "pending:legacy:negative_preference"},
+            }],
+            "lowConfidenceTerms": [],
+        },
+    }
+
+    review = run_reviewer_agent("你记得我什么？", "你不喜欢帽子。", [], "", memory=memory)
+
+    assert review["approved"] is True
+    assert review["recalledMemoryRefs"][0]["id"] == 42
+
+
+def test_reviewer_reports_the_actual_blocked_profile_id(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory = {
+        "recalled_refs": [],
+        "governance": {
+            "blockedTerms": [{
+                "value": "帽子",
+                "status": "disabled",
+                "schemaPath": "preferences.visual.dislikes",
+                "source": "profile",
+                "recordRef": {"kind": "profile", "id": 77},
+            }],
+            "lowConfidenceTerms": [],
+        },
+    }
+
+    review = run_reviewer_agent("你记得我什么？", "你不喜欢帽子。", [], "", memory=memory)
+
+    assert review["approved"] is False
+    assert review["blockedMemoryRef"] == {"kind": "profile", "id": 77}
+
+
+def test_reviewer_blocks_blanket_pending_copy_for_mixed_memory_overview(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory, tool_results = _mixed_overview_review_state()
+
+    review = run_reviewer_agent(
+        "你记得我什么？",
+        "这些记录目前都是系统自动生成的待确认状态，需要你明确确认后才会正式生效。",
+        [],
+        "",
+        memory=memory,
+        tool_results=tool_results,
+    )
+
+    assert review["approved"] is False
+    assert review["ruleBlocked"] is True
+    assert "真实状态" in review["reason"]
+    assert {item["status"] for item in review["objectStatuses"]} == {"active", "open", "rejected"}
+
+
+def test_reviewer_allows_status_aware_mixed_memory_overview(monkeypatch):
+    monkeypatch.setattr(settings, "reviewer_enabled", False)
+    memory, tool_results = _mixed_overview_review_state()
+    answer = build_memory_overview_answer("你记得我什么？", memory, tool_results)
+
+    review = run_reviewer_agent(
+        "你记得我什么？",
+        answer,
+        [],
+        "",
+        memory=memory,
+        tool_results=tool_results,
+    )
+
+    assert review["approved"] is True
+    assert {item["status"] for item in review["objectStatuses"]} == {"active", "open", "rejected"}
+
+
+def _mixed_overview_review_state():
+    memory = {
+        "profiles": [{
+            "id": 11,
+            "schemaPath": "preferences.visual.dislikes",
+            "label": "视觉负向偏好",
+            "value": "帽子",
+            "summary": "用户在视觉形象上不喜欢帽子。",
+            "status": "active",
+        }],
+        "structured": [],
+        "recalled_refs": [{
+            "kind": "profile",
+            "id": 11,
+            "schemaPath": "preferences.visual.dislikes",
+            "value": "帽子",
+            "status": "active",
+        }],
+        "governance": {"blockedTerms": [], "lowConfidenceTerms": []},
+    }
+    tool_results = [{
+        "tool": "work_summary",
+        "ok": True,
+        "summary": {
+            "todos": {"items": [{"id": 22, "title": "V2 验收任务", "status": "open"}]},
+            "operations": {"items": [{"id": 33, "summary": "验收复盘", "status": "rejected"}]},
+        },
+    }]
+    return memory, tool_results
 
 
 def test_reviewer_allows_disabled_memory_term_when_supported_by_tool_result(monkeypatch):

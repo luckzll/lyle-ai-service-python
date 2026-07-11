@@ -2,6 +2,7 @@ import re
 
 from app.chains.reviewer_chain import invoke_reviewer_chain
 from app.core.config import settings
+from app.memory.overview import is_memory_overview_question
 
 
 def run_reviewer_agent(
@@ -19,9 +20,17 @@ def run_reviewer_agent(
     rule_review = _rule_memory_governance_review(answer, memory or {}, tool_results or [])
     if not rule_review["approved"]:
         return rule_review
+    memory_review_metadata = {
+        "recalledMemoryRefs": rule_review.get("recalledMemoryRefs") or [],
+    }
+    overview_review = _rule_memory_overview_status_review(question, answer, memory or {}, tool_results or [])
+    if not overview_review["approved"]:
+        return {**overview_review, **memory_review_metadata}
+    if overview_review.get("objectStatuses"):
+        memory_review_metadata["objectStatuses"] = overview_review["objectStatuses"]
     rag_review = _rule_rag_grounding_review(question, answer, contexts, rag_sufficiency or {})
     if not rag_review["approved"]:
-        return rag_review
+        return {**rag_review, **memory_review_metadata}
     v3_review = _rule_v3_project_work_review(
         question=question,
         answer=answer,
@@ -31,7 +40,7 @@ def run_reviewer_agent(
         candidate_plans=candidate_plans or [],
     )
     if not v3_review["approved"]:
-        return v3_review
+        return {**v3_review, **memory_review_metadata}
     if not settings.reviewer_enabled:
         return {
             "approved": True,
@@ -39,6 +48,7 @@ def run_reviewer_agent(
             "reason": "Reviewer disabled",
             "rewrite_instruction": "",
             "skipped": True,
+            **memory_review_metadata,
         }
     review = invoke_reviewer_chain(question, answer, contexts, memory_context, tool_results or [])
     return {
@@ -47,6 +57,7 @@ def run_reviewer_agent(
         "reason": str(review.get("reason") or ""),
         "rewrite_instruction": str(review.get("rewrite_instruction") or ""),
         "skipped": False,
+        **memory_review_metadata,
     }
 
 
@@ -57,6 +68,7 @@ def _rule_memory_governance_review(
 ) -> dict[str, object]:
     governance = memory.get("governance") if isinstance(memory.get("governance"), dict) else {}
     tool_results = tool_results or []
+    recalled_refs = _recalled_memory_refs(memory)
     blocked_terms = governance.get("blockedTerms") if isinstance(governance, dict) else []
     for item in blocked_terms if isinstance(blocked_terms, list) else []:
         if not isinstance(item, dict):
@@ -64,6 +76,8 @@ def _rule_memory_governance_review(
         value = str(item.get("value") or "").strip()
         if value and value in answer:
             status = str(item.get("status") or "blocked")
+            if _value_supported_by_active_recalled_ref(item, value, recalled_refs):
+                continue
             if status in {"disabled", "forgotten"} and _value_supported_by_tool_results(value, tool_results):
                 continue
             return {
@@ -73,6 +87,8 @@ def _rule_memory_governance_review(
                 "rewrite_instruction": "请删除已禁用、已遗忘或敏感记忆相关内容，基于当前可用上下文重新回答。",
                 "skipped": False,
                 "ruleBlocked": True,
+                "blockedMemoryRef": item.get("recordRef") or {},
+                "recalledMemoryRefs": recalled_refs,
             }
 
     low_confidence_terms = governance.get("lowConfidenceTerms") if isinstance(governance, dict) else []
@@ -88,6 +104,7 @@ def _rule_memory_governance_review(
                 "rewrite_instruction": "请用“可能、你之前提到过、我不确定”等谨慎表达，不要把低置信度记忆说成确定事实。",
                 "skipped": False,
                 "ruleBlocked": True,
+                "recalledMemoryRefs": recalled_refs,
             }
 
     return {
@@ -96,7 +113,156 @@ def _rule_memory_governance_review(
         "reason": "记忆治理规则通过",
         "rewrite_instruction": "",
         "skipped": True,
+        "recalledMemoryRefs": recalled_refs,
     }
+
+
+def _recalled_memory_refs(memory: dict[str, object]) -> list[dict[str, object]]:
+    explicit = memory.get("recalled_refs")
+    if isinstance(explicit, list):
+        return [item for item in explicit if isinstance(item, dict) and item.get("status") == "active"][:50]
+
+    refs: list[dict[str, object]] = []
+    for item in memory.get("profiles") or []:
+        if isinstance(item, dict) and item.get("status") == "active":
+            refs.append({
+                "kind": "profile",
+                "id": item.get("id"),
+                "schemaPath": item.get("schemaPath"),
+                "value": item.get("value") or item.get("summary"),
+                "status": "active",
+            })
+    for item in memory.get("fragments") or []:
+        if isinstance(item, dict) and item.get("status") == "active":
+            refs.append({
+                "kind": "fragment",
+                "id": item.get("id"),
+                "schemaPath": item.get("category"),
+                "value": item.get("normalizedText") or item.get("sourceText"),
+                "status": "active",
+            })
+    for item in memory.get("structured") or []:
+        if isinstance(item, dict) and item.get("status") == "active":
+            refs.append({
+                "kind": "structured",
+                "id": item.get("key"),
+                "schemaPath": item.get("schemaPath") or item.get("key"),
+                "value": item.get("value"),
+                "status": "active",
+            })
+    return refs[:50]
+
+
+def _value_supported_by_active_recalled_ref(
+    blocked_term: dict[str, object],
+    value: str,
+    recalled_refs: list[dict[str, object]],
+) -> bool:
+    blocked_schema_path = str(blocked_term.get("schemaPath") or "")
+    blocked_ref = blocked_term.get("recordRef") if isinstance(blocked_term.get("recordRef"), dict) else {}
+    blocked_kind = str(blocked_ref.get("kind") or blocked_term.get("source") or "")
+    normalized_value = _normalise_memory_value(value)
+    if not normalized_value:
+        return False
+    for ref in recalled_refs:
+        if str(ref.get("status") or "") != "active":
+            continue
+        if blocked_schema_path and str(ref.get("schemaPath") or "") != blocked_schema_path:
+            continue
+        # A disabled profile is the user-facing governance decision and cannot be
+        # overridden by an inconsistent legacy structured row.
+        if blocked_kind == "profile" and str(ref.get("kind") or "") == "structured":
+            continue
+        candidate_value = _normalise_memory_value(str(ref.get("value") or ""))
+        if candidate_value and (
+            candidate_value == normalized_value
+            or candidate_value in normalized_value
+            or normalized_value in candidate_value
+        ):
+            return True
+    return False
+
+
+def _normalise_memory_value(value: str) -> str:
+    return re.sub(r"[\s：:，,。.!！？?、；;\"'“”]+", "", value or "").lower()
+
+
+def _rule_memory_overview_status_review(
+    question: str,
+    answer: str,
+    memory: dict[str, object],
+    tool_results: list[dict[str, object]],
+) -> dict[str, object]:
+    if not is_memory_overview_question(question):
+        return _approved_rule("记忆概览状态规则跳过")
+
+    object_statuses = _memory_overview_object_statuses(memory, tool_results)
+    compact = re.sub(r"\s+", "", answer or "")
+    blanket_pending = (
+        "待确认" in compact
+        and (
+            any(marker in compact for marker in ["这些记录", "以上记录", "这些信息", "全部", "都是待确认"])
+            or ("确认后" in compact and any(marker in compact for marker in ["生效", "正式", "执行"]))
+        )
+    )
+    has_effective_or_final_state = any(
+        item.get("status") in {"active", "open", "done", "cancelled", "confirmed", "rejected"}
+        for item in object_statuses
+    )
+    if blanket_pending and has_effective_or_final_state:
+        return {
+            "approved": False,
+            "score": 0.2,
+            "reason": "记忆概览把不同对象的真实状态统一误写为待确认",
+            "rewrite_instruction": (
+                "请逐对象使用真实状态：active 画像写“已确认记忆”，open 任务写“进行中”，"
+                "rejected 操作写“已拒绝、未执行”；不要统一追加确认后生效。"
+            ),
+            "skipped": False,
+            "ruleBlocked": True,
+            "objectStatuses": object_statuses,
+        }
+    return {
+        **_approved_rule("记忆概览状态规则通过"),
+        "objectStatuses": object_statuses,
+    }
+
+
+def _memory_overview_object_statuses(
+    memory: dict[str, object],
+    tool_results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    statuses = [
+        {
+            "kind": "profile",
+            "id": item.get("id"),
+            "status": item.get("status"),
+            "schemaPath": item.get("schemaPath"),
+        }
+        for item in (memory.get("profiles") if isinstance(memory.get("profiles"), list) else [])
+        if isinstance(item, dict)
+    ]
+    for result in tool_results:
+        if not isinstance(result, dict) or result.get("tool") != "work_summary" or not result.get("ok"):
+            continue
+        summary = result.get("summary")
+        if not isinstance(summary, dict):
+            payload = result.get("result") if isinstance(result.get("result"), dict) else {}
+            summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        todos = summary.get("todos") if isinstance(summary.get("todos"), dict) else {}
+        operations = summary.get("operations") if isinstance(summary.get("operations"), dict) else {}
+        statuses.extend(
+            {"kind": "todo", "id": item.get("id"), "status": item.get("status")}
+            for item in (todos.get("items") if isinstance(todos.get("items"), list) else [])
+            if isinstance(item, dict)
+        )
+        statuses.extend(
+            {"kind": "operation", "id": item.get("id"), "status": item.get("status")}
+            for item in (operations.get("items") if isinstance(operations.get("items"), list) else [])
+            if isinstance(item, dict)
+        )
+        break
+    return statuses[:50]
 
 
 def _value_supported_by_tool_results(value: str, tool_results: list[dict[str, object]]) -> bool:

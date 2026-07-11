@@ -52,6 +52,7 @@ _structured: dict[str, dict[str, StructuredMemory]] = defaultdict(dict)
 _postgres_ready = False
 _qdrant_memory_ready = False
 _milvus_ready = False
+_milvus_init_lock = Lock()
 _vector_backend_disabled_until: dict[str, float] = {}
 logger = logging.getLogger(__name__)
 _QUESTION_LIKE_PATTERN = re.compile(r"(是什么|是谁|什么|哪里|哪个|多少|怎么|为什么|为何|吗|呢|啥|？|\?)")
@@ -97,6 +98,7 @@ def recall_memory(
     recall_plan = plan_recall(question)
     profile_context = build_profile_memory_context(user_id, question, recall_plan, limit=settings.memory_recall_limit)
     structured = _load_structured(user_id, question)
+    recalled_refs = _build_recalled_memory_refs(profile_context, structured)
     candidate_limit = _memory_candidate_limit()
     semantic: list[dict[str, object]] = []
     vector: list[dict[str, object]] = []
@@ -122,6 +124,7 @@ def recall_memory(
         "profile_context": profile_context,
         "profiles": profile_context.get("profiles") or [],
         "fragments": profile_context.get("fragments") or [],
+        "recalled_refs": recalled_refs,
         "governance": _memory_governance_snapshot(user_id),
         "short_term": [asdict(item) for item in short],
         "structured": [asdict(item) for item in structured],
@@ -131,11 +134,18 @@ def recall_memory(
     }
 
 
-def remember_interaction(user_id: str, conversation_id: str | None, question: str, answer: str) -> dict[str, object]:
+def remember_interaction(
+    user_id: str,
+    conversation_id: str | None,
+    question: str,
+    answer: str,
+    *,
+    extract_candidates: bool = True,
+) -> dict[str, object]:
     add_turn(user_id, conversation_id, "user", question)
     add_turn(user_id, conversation_id, "assistant", answer)
     compress_memory(user_id, conversation_id)
-    candidate_memories = extract_structured_memory(user_id, conversation_id, question)
+    candidate_memories = extract_structured_memory(user_id, conversation_id, question) if extract_candidates else []
     text = _build_vector_memory_text(user_id, question)
     should_write, reason = _should_write_vector_memory(question, text)
     vector_memory_write: dict[str, object] = {
@@ -215,11 +225,18 @@ def compress_memory(user_id: str, conversation_id: str | None) -> None:
     )
 
 
-def extract_structured_memory(user_id: str, conversation_id: str | None, text: str) -> list[dict[str, object]]:
+def extract_structured_memory(
+    user_id: str,
+    conversation_id: str | None,
+    text: str,
+    *,
+    extraction_mode: str | None = None,
+) -> list[dict[str, object]]:
     _apply_structured_memory_denials(user_id, text)
     candidates = _extract_structured_candidates(
         text,
         _load_short_term(user_id, conversation_id),
+        extraction_mode=extraction_mode,
     )
     if not candidates:
         return []
@@ -335,7 +352,7 @@ def export_memory(user_id: str, conversation_id: str | None) -> dict[str, object
         _export_turn_preview(item)
         for item in memory.get("short_term", [])  # type: ignore[union-attr]
     ]
-    memory["structured_all"] = [asdict(item) for item in _load_all_structured(user_id)]
+    memory["structured_all"] = [_structured_memory_for_export(item) for item in _load_all_structured(user_id)]
     profiles = list_user_profiles(user_id, limit=300)
     evidence_counts = evidence_count_by_profile(user_id)
     memory["profiles"] = [
@@ -345,6 +362,16 @@ def export_memory(user_id: str, conversation_id: str | None) -> dict[str, object
     memory["fragments"] = list_memory_fragments(user_id, limit=300)
     memory["profile_schema"] = profile_schema_overview()
     return memory
+
+
+def _structured_memory_for_export(item: StructuredMemory) -> dict[str, object]:
+    result = asdict(item)
+    if item.status == "pending" and item.key.startswith("pending:"):
+        target_key = item.key.split(":", 2)[-1]
+        result["targetKey"] = target_key
+        result["schemaPath"] = schema_path_for_memory(target_key, item.value)
+        result["sourceRef"] = item.source.split("\n", 1)[0].removeprefix("source_ref:")
+    return result
 
 
 def _sanitize_memory_content(content: str) -> str:
@@ -679,7 +706,6 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
         )
         _sync_structured_status_to_profile(user_id, key, item.value, status)
         return asdict(item)
-
     with _lock:
         item = _structured[user_id].get(key)
         if not item:
@@ -691,6 +717,25 @@ def set_structured_memory_status(user_id: str, key: str, status: str) -> dict[st
         logger.info("Structured memory status changed. user_id=%s key=%s status=%s", user_id, key, status)
         _sync_structured_status_to_profile(user_id, key, item.value, status)
         return asdict(item)
+
+
+def set_profile_memory_status(user_id: str, schema_path: str, status: str) -> dict[str, object]:
+    """Apply a profile governance decision to every store for that identity."""
+    normalized_status = _normalise_memory_status(status)
+    matching_structured = [
+        item
+        for item in _load_all_structured(user_id)
+        if not item.key.startswith("pending:")
+        and schema_path_for_memory(_structured_target_key(item.key), item.value) == schema_path
+    ]
+    for item in matching_structured:
+        set_structured_memory_status(user_id, item.key, normalized_status)
+
+    profile = set_user_profile_status(user_id, schema_path, normalized_status)
+    for fragment in list_memory_fragments(user_id, category=schema_path, limit=500):
+        if str(fragment.get("status") or "") != normalized_status:
+            set_memory_fragment_status(user_id, int(fragment["id"]), normalized_status)
+    return profile
 
 
 def purge_structured_memory(user_id: str, key: str) -> None:
@@ -1390,6 +1435,14 @@ def _ensure_milvus_collection() -> None:
     if _milvus_ready:
         return
 
+    with _milvus_init_lock:
+        if _milvus_ready:
+            return
+        _initialize_milvus_collection()
+
+
+def _initialize_milvus_collection() -> None:
+    global _milvus_ready
     from pymilvus import DataType
 
     client = _milvus_client()
@@ -1493,7 +1546,12 @@ def _milvus_client():
     return MilvusClient(uri=settings.milvus_uri)
 
 
-def _extract_structured_candidates(text: str, recent_turns: list[MemoryTurn] | None = None) -> list[tuple[str, str, float]]:
+def _extract_structured_candidates(
+    text: str,
+    recent_turns: list[MemoryTurn] | None = None,
+    *,
+    extraction_mode: str | None = None,
+) -> list[tuple[str, str, float]]:
     control_candidates = _extract_memory_control_candidates(text)
     if control_candidates:
         return _dedupe_structured_candidates(control_candidates)
@@ -1504,7 +1562,7 @@ def _extract_structured_candidates(text: str, recent_turns: list[MemoryTurn] | N
     if _is_task_commitment_text(text):
         return []
 
-    mode = settings.structured_memory_extractor.lower()
+    mode = (extraction_mode or settings.structured_memory_extractor).lower()
     if mode not in {"rule", "llm", "hybrid"}:
         mode = "hybrid"
 
@@ -1593,7 +1651,8 @@ def _extract_structured_candidates_by_rule(text: str) -> list[tuple[str, str, fl
 
     career_patterns = [
         r"我的(?:职业|工作|岗位)是([^，。,.!\n]{1,64})",
-        r"我是(?:一个|一名)?([^，。,.!\n]{1,32}(?:工程师|程序员|开发|架构师|产品经理|设计师|运营|学生|教师|医生|律师))",
+        r"我(?:现在|目前|当前|如今)是(?:一个|一名)?([^，。,.!\n]{0,32}?(?:工程师|程序员|架构师|产品经理|设计师|开发|运营|学生|教师|医生|律师))(?=[，。,.!\n]|$)",
+        r"我是(?:一个|一名)?([^，。,.!\n]{0,32}?(?:工程师|程序员|架构师|产品经理|设计师|开发|运营|学生|教师|医生|律师))(?=[，。,.!\n]|$)",
     ]
     for pattern in career_patterns:
         for match in re.finditer(pattern, text):
@@ -1999,9 +2058,58 @@ def _memory_governance_snapshot(user_id: str) -> dict[str, object]:
     low_confidence_terms: list[dict[str, object]] = []
     seen_blocked: set[str] = set()
     seen_low: set[str] = set()
+    structured_items = _load_all_structured(user_id)
+    profiles = list_user_profiles(user_id, limit=500)
+    fragments = list_memory_fragments(user_id, limit=500)
+    active_successors = _active_memory_successors(structured_items, profiles)
 
-    for item in _load_all_structured(user_id):
-        schema_path = schema_path_for_memory(item.key, item.value)
+    # Profiles are the user-facing governance entity, so retain their stable IDs
+    # before considering duplicate structured or fragment records.
+    for profile in profiles:
+        schema_path = str(profile.get("schemaPath") or "")
+        value = str(profile.get("value") or profile.get("summary") or "")
+        status = str(profile.get("status") or "")
+        confidence = float(profile.get("confidence") or 1.0)
+        record_ref = {"kind": "profile", "id": profile.get("id")}
+        if schema_path.startswith("memory_control."):
+            if status == "active":
+                _append_unique_governance_term(
+                    blocked_terms, seen_blocked, value, status, schema_path, "profile", record_ref
+                )
+            continue
+        if status in {"disabled", "forgotten"}:
+            _append_unique_governance_term(
+                blocked_terms, seen_blocked, value, status, schema_path, "profile", record_ref
+            )
+        elif status == "active" and confidence < 0.75:
+            _append_unique_governance_term(
+                low_confidence_terms, seen_low, value, status, schema_path, "profile", record_ref
+            )
+
+    for item in structured_items:
+        target_key = _structured_target_key(item.key)
+        schema_path = schema_path_for_memory(target_key, item.value)
+        record_kind = "candidate" if item.key.startswith("pending:") else "structured"
+        record_ref = {"kind": record_kind, "id": item.key}
+
+        if item.key.startswith("pending:"):
+            # A disabled pending row can mean either “accepted and consumed” or
+            # “rejected”. An active canonical successor distinguishes the two and
+            # keeps historical accepted candidates from blocking valid recall.
+            if item.status in {"pending", "disabled", "forgotten"}:
+                if _has_active_memory_successor(schema_path, item.value, active_successors):
+                    continue
+                _append_unique_governance_term(
+                    blocked_terms,
+                    seen_blocked,
+                    item.value,
+                    item.status,
+                    schema_path,
+                    "candidate",
+                    record_ref,
+                )
+            continue
+
         if schema_path.startswith("memory_control."):
             if item.status == "active" and item.value:
                 _append_unique_governance_term(
@@ -2011,31 +2119,114 @@ def _memory_governance_snapshot(user_id: str) -> dict[str, object]:
                     item.status,
                     schema_path,
                     "structured",
+                    record_ref,
                 )
             continue
         if item.status in {"disabled", "forgotten"}:
-            _append_unique_governance_term(blocked_terms, seen_blocked, item.value, item.status, schema_path, "structured")
+            _append_unique_governance_term(
+                blocked_terms, seen_blocked, item.value, item.status, schema_path, "structured", record_ref
+            )
         elif item.status == "active" and item.confidence < 0.75:
-            _append_unique_governance_term(low_confidence_terms, seen_low, item.value, item.status, schema_path, "structured")
+            _append_unique_governance_term(
+                low_confidence_terms, seen_low, item.value, item.status, schema_path, "structured", record_ref
+            )
 
-    for profile in list_user_profiles(user_id, limit=500):
-        schema_path = str(profile.get("schemaPath") or "")
-        value = str(profile.get("value") or profile.get("summary") or "")
-        status = str(profile.get("status") or "")
-        confidence = float(profile.get("confidence") or 1.0)
-        if schema_path.startswith("memory_control."):
-            if status == "active":
-                _append_unique_governance_term(blocked_terms, seen_blocked, value, status, schema_path, "profile")
+    for fragment in fragments:
+        status = str(fragment.get("status") or "")
+        if status not in {"disabled", "forgotten"}:
             continue
-        if status in {"disabled", "forgotten"}:
-            _append_unique_governance_term(blocked_terms, seen_blocked, value, status, schema_path, "profile")
-        elif status == "active" and confidence < 0.75:
-            _append_unique_governance_term(low_confidence_terms, seen_low, value, status, schema_path, "profile")
+        schema_path = str(fragment.get("category") or "")
+        value = str(fragment.get("normalizedText") or fragment.get("sourceText") or "")
+        _append_unique_governance_term(
+            blocked_terms,
+            seen_blocked,
+            value,
+            status,
+            schema_path,
+            "fragment",
+            {"kind": "fragment", "id": fragment.get("id")},
+        )
 
     return {
         "blockedTerms": blocked_terms[:50],
         "lowConfidenceTerms": low_confidence_terms[:50],
     }
+
+
+def _active_memory_successors(
+    structured_items: list[StructuredMemory],
+    profiles: list[dict[str, object]],
+) -> list[tuple[str, str]]:
+    successors = [
+        (
+            schema_path_for_memory(_structured_target_key(item.key), item.value),
+            _normalise_match_text(item.value),
+        )
+        for item in structured_items
+        if item.status == "active" and not item.key.startswith("pending:")
+    ]
+    successors.extend(
+        (
+            str(profile.get("schemaPath") or ""),
+            _normalise_match_text(str(profile.get("value") or profile.get("summary") or "")),
+        )
+        for profile in profiles
+        if str(profile.get("status") or "") == "active"
+    )
+    return [(schema_path, value) for schema_path, value in successors if schema_path and value]
+
+
+def _has_active_memory_successor(
+    schema_path: str,
+    value: str,
+    successors: list[tuple[str, str]],
+) -> bool:
+    normalized = _normalise_match_text(value)
+    return any(
+        candidate_path == schema_path
+        and (normalized == candidate_value or normalized in candidate_value or candidate_value in normalized)
+        for candidate_path, candidate_value in successors
+        if normalized and candidate_value
+    )
+
+
+def _build_recalled_memory_refs(
+    profile_context: dict[str, object],
+    structured: list[StructuredMemory],
+) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    for profile in profile_context.get("profiles") or []:
+        if not isinstance(profile, dict) or str(profile.get("status") or "") != "active":
+            continue
+        refs.append({
+            "kind": "profile",
+            "id": profile.get("id"),
+            "schemaPath": str(profile.get("schemaPath") or ""),
+            "value": str(profile.get("value") or profile.get("summary") or ""),
+            "status": "active",
+        })
+    for fragment in profile_context.get("fragments") or []:
+        if not isinstance(fragment, dict) or str(fragment.get("status") or "") != "active":
+            continue
+        refs.append({
+            "kind": "fragment",
+            "id": fragment.get("id"),
+            "schemaPath": str(fragment.get("category") or ""),
+            "value": str(fragment.get("normalizedText") or fragment.get("sourceText") or ""),
+            "status": "active",
+            "sourceRef": str(fragment.get("sourceRef") or ""),
+        })
+    for item in structured:
+        if item.status != "active" or item.key.startswith("pending:"):
+            continue
+        refs.append({
+            "kind": "structured",
+            "id": item.key,
+            "schemaPath": schema_path_for_memory(_structured_target_key(item.key), item.value),
+            "value": item.value,
+            "status": "active",
+        })
+    return refs
 
 
 def _append_unique_governance_term(
@@ -2045,16 +2236,19 @@ def _append_unique_governance_term(
     status: str,
     schema_path: str,
     source: str,
+    record_ref: dict[str, object] | None = None,
 ) -> None:
     normalized = _normalise_match_text(value)
-    if len(normalized) < 2 or normalized in seen:
+    identity = f"{schema_path}:{normalized}"
+    if len(normalized) < 2 or identity in seen:
         return
-    seen.add(normalized)
+    seen.add(identity)
     items.append({
         "value": value,
         "status": status,
         "schemaPath": schema_path,
         "source": source,
+        "recordRef": record_ref or {"kind": source},
     })
 
 

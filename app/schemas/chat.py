@@ -41,5 +41,6 @@ class ChatResponse(BaseModel):
     candidate_decisions: list[dict[str, object]] = Field(default_factory=list, alias="candidateDecisions")
     candidate_open_questions: list[dict[str, object]] = Field(default_factory=list, alias="candidateOpenQuestions")
     candidate_plans: list[dict[str, object]] = Field(default_factory=list, alias="candidatePlans")
+    execution_suggestions: list[dict[str, object]] = Field(default_factory=list, alias="executionSuggestions")
     project_context: dict[str, object] = Field(default_factory=dict, alias="projectContext")
     review: dict[str, object] = Field(default_factory=dict)

@@ -3,6 +3,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from app.core.runtime import require_supported_python
+
+require_supported_python()
+
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -20,6 +24,8 @@ from app.api.prompts import router as prompts_router
 from app.api.projects import router as projects_router
 from app.api.rag_debug import router as rag_debug_router
 from app.api.tools import router as tools_router
+from app.api.workbench import router as workbench_router
+from app.api.experience import router as experience_router
 from app.core.config import settings
 from app.core.database import close_postgres_pool
 from app.core.logging_config import configure_logging
@@ -28,6 +34,7 @@ from app.core.rate_limit import rate_limit_middleware
 from app.core.security import internal_token_is_insecure, internal_token_middleware
 from app.workers.memory_decay_worker import run_memory_decay_worker
 from app.workers.notification_worker import run_notification_worker
+from app.workers.automation_scheduler_worker import run_automation_scheduler_worker
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -53,10 +60,13 @@ async def lifespan(app: FastAPI):
     stop_event = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
     memory_decay_task: asyncio.Task[None] | None = None
+    automation_task: asyncio.Task[None] | None = None
     if settings.notification_worker_enabled:
         notification_task = asyncio.create_task(run_notification_worker(stop_event))
     if settings.memory_decay_worker_enabled:
         memory_decay_task = asyncio.create_task(run_memory_decay_worker(stop_event))
+    if settings.automation_worker_enabled:
+        automation_task = asyncio.create_task(run_automation_scheduler_worker(stop_event))
     try:
         yield
     finally:
@@ -65,6 +75,8 @@ async def lifespan(app: FastAPI):
             await notification_task
         if memory_decay_task is not None:
             await memory_decay_task
+        if automation_task is not None:
+            await automation_task
     close_postgres_pool()
     logger.info("Python AI service stopped.")
 
@@ -97,3 +109,5 @@ app.include_router(tools_router, prefix="/ai", tags=["tools"])
 app.include_router(prompts_router, prefix="/ai", tags=["prompts"])
 app.include_router(projects_router, prefix="/ai", tags=["projects"])
 app.include_router(rag_debug_router, prefix="/ai", tags=["rag-debug"])
+app.include_router(workbench_router, prefix="/ai", tags=["workbench"])
+app.include_router(experience_router, prefix="/ai", tags=["experience"])

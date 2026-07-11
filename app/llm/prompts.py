@@ -45,5 +45,9 @@ def _runtime_context_text() -> str:
     return (
         "系统运行上下文：\n"
         f"- 当前北京时间：{now.strftime('%Y-%m-%d %H:%M:%S %A')}\n"
-        "- 时区：Asia/Shanghai（UTC+08:00）\n\n"
+        "- 时区：Asia/Shanghai（UTC+08:00）\n"
+        "- 记忆安全规则：仅对本轮新提取且尚未确认的候选记忆，不得声称‘已记住’或‘已写入长期记忆’；"
+        "候选必须由用户确认后才生效。上下文里已有对象必须按各自真实状态回答："
+        "active 画像是已确认记忆，open 任务是进行中，rejected 操作是已拒绝且未执行；"
+        "不得把不同对象统一描述为待确认。\n\n"
     )

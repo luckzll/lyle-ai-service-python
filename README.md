@@ -26,15 +26,43 @@ app/
 - GET /ai/ingest/tasks/{task_id}
 - POST /ai/agent/chat
 
+## 执行体验
+
+执行体验在工作流与自动化之上增加受控模板、草稿、首次巡检、执行结果与确认收件箱。对外接口统一由 Java 登录态代理，Python 路由仅接收已注入的 `user_id`：
+
+- `GET /ai/experience/templates/{user_id}`：只读结果型模板目录。
+- `POST /ai/experience/drafts/{user_id}/from-template`、`from-intent`：仅创建草稿，不执行。
+- `POST /ai/experience/drafts/{user_id}/{draft_id}/enable`：物化为既有工作流与自动化。
+- `GET /ai/experience/execution/{user_id}/results`：用户可读的执行摘要。
+- `GET /ai/experience/confirmations/{user_id}`：复用既有待确认操作状态机。
+
+首次部署执行体验前运行数据库迁移：
+
+```bash
+cd ai-app/ai-service-python
+.venv312/bin/alembic upgrade head
+```
+
+迁移会新增草稿、引导、结果摘要与确认收件箱表，并仅为既有 MCP 连接新增可空的 `secret_ref`；不会删除或重写工作流运行和审计数据。
+
+外部 MCP 凭据使用运行环境引用，而非 JSON 明文。例如在部署环境设置 `LYLE_GITHUB_TOKEN`，连接配置使用 `secretRef: "env:LYLE_GITHUB_TOKEN"`，并在授权 Header 或进程环境变量中使用 `{{secret_ref}}`。列表和前端响应只会显示“已配置凭据”。
+
 ## 本地测试环境
 
-推荐使用 Python 3.12。当前依赖里的 `pydantic-core==2.27.2` 不适合用 Python 3.14 构建；如果系统默认 `python3` 指向 3.14，请显式使用 `.venv312`。
+项目统一且仅支持 Python 3.12。仓库的 `.python-version`、应用启动保护和 Docker 镜像都会阻止误用 Python 3.14。`requirements.txt` 维护直接依赖，`requirements.lock` 固定完整依赖树；本地、CI 与 Docker 均应优先使用 lock 文件，避免 MCP SDK、Starlette 与 Pydantic 因 Python 条件依赖发生漂移。
 
 ```bash
 cd ai-app/ai-service-python
 python3.12 -m venv .venv312
-.venv312/bin/python -m pip install -r requirements.txt
+.venv312/bin/python -m pip install -r requirements.lock
 .venv312/bin/python -m pytest
+```
+
+直接依赖变化后，用固定版本的 `pip-tools` 重新生成 lock：
+
+```bash
+.venv312/bin/python -m pip install pip-tools==7.5.3
+.venv312/bin/pip-compile --resolver=backtracking --strip-extras --allow-unsafe --output-file=requirements.lock requirements.txt
 ```
 
 如果本机已经存在 `.venv312`，可以直接运行：

@@ -13,6 +13,7 @@ from app.agents.supervisor_agent import run_supervisor_agent
 from app.agents.tool_agent import run_tool_agent
 from app.agents.writer_agent import run_writer_agent
 from app.core.config import settings
+from app.memory.overview import build_memory_overview_answer
 
 
 logger = logging.getLogger(__name__)
@@ -159,7 +160,12 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
         excluded_memory_context_chars=len(state["memory_context"]) if has_work_summary_tool else 0,
         memory_exclusion_reason="work_summary_tool_takes_priority" if has_work_summary_tool else "",
     )
-    answer = run_writer_agent(
+    overview_answer = build_memory_overview_answer(
+        state["question"],
+        state["memory"],
+        state["tool_results"],
+    )
+    answer = overview_answer or run_writer_agent(
         state["question"],
         state["contexts"],
         memory_context,
@@ -184,6 +190,7 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
                 "answerChars": len(answer),
                 "rewriteAttempt": state["review_attempts"],
                 "writerInput": writer_input,
+                "deterministicMemoryOverview": bool(overview_answer),
                 "elapsedMs": _elapsed_ms(started),
             },
         ],
