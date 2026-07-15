@@ -12,7 +12,7 @@ _windows: dict[str, tuple[int, int]] = {}
 
 
 async def rate_limit_middleware(request: Request, call_next) -> Response:
-    if request.url.path == "/health":
+    if request.url.path in {"/health", "/ready"}:
         return await call_next(request)
 
     limit = settings.python_rate_limit_per_minute

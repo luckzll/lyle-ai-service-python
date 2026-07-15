@@ -6,7 +6,7 @@ from fastapi.responses import JSONResponse, Response
 from app.core.config import settings
 
 
-PUBLIC_PATHS = {"/health"}
+PUBLIC_PATHS = {"/health", "/ready"}
 PUBLIC_PREFIXES = ("/generated-images/",)
 
 # 空值和历史默认占位 token 一律视为不安全配置，直接拒绝服务，防止鉴权被静默跳过。

@@ -7,7 +7,7 @@ from app.core.runtime import require_supported_python
 
 require_supported_python()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.api.agent import router as agent_router
@@ -26,12 +26,14 @@ from app.api.rag_debug import router as rag_debug_router
 from app.api.tools import router as tools_router
 from app.api.workbench import router as workbench_router
 from app.api.experience import router as experience_router
+from app.api.agent_tasks import router as agent_tasks_router
 from app.core.config import settings
 from app.core.database import close_postgres_pool
 from app.core.logging_config import configure_logging
 from app.core.metrics import metrics_middleware
 from app.core.rate_limit import rate_limit_middleware
 from app.core.security import internal_token_is_insecure, internal_token_middleware
+from app.embedding.client import get_embedding_readiness, warm_up_embedding_model
 from app.workers.memory_decay_worker import run_memory_decay_worker
 from app.workers.notification_worker import run_notification_worker
 from app.workers.automation_scheduler_worker import run_automation_scheduler_worker
@@ -57,6 +59,16 @@ async def lifespan(app: FastAPI):
             "INTERNAL_API_TOKEN 未配置为安全值（为空或占位值），所有 /ai/* 请求将返回 503。"
             "请在 .env 中设置强随机 token。"
         )
+    try:
+        embedding_status = await asyncio.to_thread(warm_up_embedding_model)
+        logger.info(
+            "Embedding model ready. provider=%s model=%s",
+            embedding_status["provider"],
+            embedding_status["model"],
+        )
+    except Exception:
+        # Keep liveness available for diagnostics while readiness remains 503.
+        logger.exception("Embedding model warm-up failed; service will remain unready.")
     stop_event = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
     memory_decay_task: asyncio.Task[None] | None = None
@@ -95,6 +107,20 @@ def health() -> dict[str, str]:
     return {"status": "ok", "service": "ai-service-python"}
 
 
+@app.get("/ready")
+def ready(response: Response) -> dict[str, object]:
+    embedding = get_embedding_readiness()
+    is_ready = bool(embedding["ready"]) and not internal_token_is_insecure()
+    if not is_ready:
+        response.status_code = 503
+    return {
+        "status": "ready" if is_ready else "not_ready",
+        "service": "ai-service-python",
+        "embedding": embedding,
+        "securityConfigured": not internal_token_is_insecure(),
+    }
+
+
 app.include_router(chat_router, prefix="/ai", tags=["chat"])
 app.include_router(briefings_router, prefix="/ai", tags=["briefings"])
 app.include_router(connectors_router, prefix="/ai", tags=["connectors"])
@@ -111,3 +137,4 @@ app.include_router(projects_router, prefix="/ai", tags=["projects"])
 app.include_router(rag_debug_router, prefix="/ai", tags=["rag-debug"])
 app.include_router(workbench_router, prefix="/ai", tags=["workbench"])
 app.include_router(experience_router, prefix="/ai", tags=["experience"])
+app.include_router(agent_tasks_router, prefix="/internal", tags=["agent-tasks-internal"])

@@ -56,7 +56,7 @@ def search_web(query: str) -> dict[str, object]:
 def _search_tavily(query: str) -> list[dict[str, str]]:
     with httpx.Client(timeout=15) as client:
         response = client.post(
-            "https://api.tavily.com/search",
+            settings.tool_web_search_base_url.strip() or "https://api.tavily.com/search",
             json={
                 "api_key": settings.tool_web_search_api_key,
                 "query": query,

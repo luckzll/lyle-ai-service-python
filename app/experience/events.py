@@ -13,11 +13,25 @@ from app.core.database import postgres_connection
 
 logger = logging.getLogger(__name__)
 
+EFFECTIVE_PROGRESS_ACTIONS = frozenset({
+    "task_complete",
+    "task_reschedule",
+    "confirmation",
+    "automation_enable",
+    "automation_run",
+    "result_action",
+    "project_chat",
+})
+
 EVENT_TYPES = {
     "onboarding_started", "onboarding_skipped", "first_run_started", "first_run_completed",
     "template_viewed", "draft_created", "draft_enabled", "draft_discarded", "result_viewed",
     "confirmation_viewed", "confirmation_confirmed", "confirmation_rejected",
     "automation_failed", "retry_started", "connection_diagnostic_started",
+    "dashboard_viewed", "dashboard_action_clicked", "quick_intent_submitted",
+    "navigation_group_opened", "context_panel_opened", "automation_card_actioned",
+    "execution_filter_applied", "result_source_opened", "confirmation_completed",
+    "mobile_primary_action_used", "ui_error_recovered", "effective_progress_action",
 }
 
 
@@ -33,9 +47,21 @@ def record_event(
     """Never let analytics influence the user-facing execution path."""
     if not settings.postgres_enabled or event_type not in EVENT_TYPES:
         return
+    if template_id is not None and len(template_id) > 64:
+        logger.warning("Dropping an overlong product-event template id")
+        template_id = None
+    if status is not None and len(status) > 32:
+        logger.warning("Dropping an overlong product-event status")
+        status = None
+    if duration_ms is not None and not 0 <= duration_ms <= 9_223_372_036_854_775_807:
+        logger.warning("Dropping an out-of-range product-event duration")
+        duration_ms = None
     safe_metadata = {
         key: value for key, value in (metadata or {}).items()
-        if key in {"source", "action", "errorCategory", "projectSelected", "workspaceSelected"}
+        if key in {
+            "source", "action", "actionType", "page", "projectId", "entityId",
+            "errorCategory", "projectSelected", "workspaceSelected"
+        }
         and isinstance(value, (str, int, bool, type(None)))
     }
     try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from fastapi import HTTPException
@@ -13,6 +14,7 @@ from app.workflows.workflow_store import get_workflow
 
 
 TRIGGER_TYPES = {"schedule", "project_stale", "task_due"}
+logger = logging.getLogger(__name__)
 
 
 def create_automation(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -61,20 +63,110 @@ def create_automation(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
 def list_automations(user_id: str) -> list[dict[str, Any]]:
     _ensure_postgres()
+    _ensure_latest_result_summaries(user_id)
     with postgres_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, workflow_id, name, trigger_type, schedule_expr, timezone, status,
-                   next_run_at, last_run_at, input, max_retries, retry_delay_seconds,
-                   consecutive_failures, notify_on_failure, lease_until, last_event_key,
-                   last_event_at, pending_event_key, pending_event_input, created_at, updated_at
-            FROM automation_rule
-            WHERE user_id = %s
-            ORDER BY updated_at DESC
+            SELECT automation.id, automation.workflow_id, automation.name, automation.trigger_type,
+                   automation.schedule_expr, automation.timezone, automation.status,
+                   automation.next_run_at, automation.last_run_at, automation.input,
+                   automation.max_retries, automation.retry_delay_seconds,
+                   automation.consecutive_failures, automation.notify_on_failure,
+                   automation.lease_until, automation.last_event_key, automation.last_event_at,
+                   automation.pending_event_key, automation.pending_event_input,
+                   automation.created_at, automation.updated_at,
+                   workflow.project_id, project.name, latest.status,
+                   result.id, result.title, result.status,
+                   (automation.consecutive_failures > 0
+                     OR latest.status = 'failed'
+                     OR result.status IN ('failed', 'partial', 'awaiting_confirmation')) AS needs_attention
+            FROM automation_rule automation
+            JOIN workflow_template workflow
+              ON workflow.id = automation.workflow_id AND workflow.user_id = automation.user_id
+            LEFT JOIN project
+              ON project.id = workflow.project_id AND project.user_id = automation.user_id
+            LEFT JOIN LATERAL (
+              SELECT run.id, run.status, run.workflow_run_id
+              FROM automation_run run
+              WHERE run.user_id = automation.user_id AND run.automation_id = automation.id
+              ORDER BY run.created_at DESC
+              LIMIT 1
+            ) latest ON true
+            LEFT JOIN LATERAL (
+              SELECT summary.id, summary.title, summary.status
+              FROM execution_result_summary summary
+              WHERE summary.user_id = automation.user_id
+                AND (
+                  (summary.source_type = 'workflow_run' AND summary.source_id = latest.workflow_run_id::text)
+                  OR (summary.source_type = 'automation' AND summary.source_id = latest.id::text)
+                )
+              ORDER BY summary.created_at DESC
+              LIMIT 1
+            ) result ON true
+            WHERE automation.user_id = %s
+            ORDER BY automation.updated_at DESC
             """,
             (user_id,),
         ).fetchall()
-    return [_row(row) for row in rows]
+    return [_summary_row(row) for row in rows]
+
+
+def _ensure_latest_result_summaries(user_id: str) -> None:
+    with postgres_connection() as conn:
+        rows = conn.execute(
+            """
+            WITH latest AS (
+              SELECT DISTINCT ON (run.automation_id)
+                run.id AS automation_run_id, run.automation_id, run.workflow_run_id,
+                run.status, automation.name AS automation_name,
+                workflow.project_id, run.created_at
+              FROM automation_run run
+              JOIN automation_rule automation
+                ON automation.id = run.automation_id AND automation.user_id = run.user_id
+              JOIN workflow_template workflow
+                ON workflow.id = automation.workflow_id AND workflow.user_id = run.user_id
+              WHERE run.user_id = %s
+              ORDER BY run.automation_id, run.created_at DESC, run.id DESC
+            )
+            SELECT automation_run_id, workflow_run_id, status, automation_name, project_id
+            FROM latest
+            WHERE (workflow_run_id IS NOT NULL OR status = 'failed')
+              AND NOT EXISTS (
+                SELECT 1
+                FROM execution_result_summary result
+                WHERE result.user_id = %s
+                  AND result.source_type = CASE
+                    WHEN latest.workflow_run_id IS NOT NULL THEN 'workflow_run'
+                    ELSE 'automation'
+                  END
+                  AND result.source_id = COALESCE(
+                    latest.workflow_run_id, latest.automation_run_id
+                  )::text
+              )
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            (user_id, user_id),
+        ).fetchall()
+    if not rows:
+        return
+    from app.experience.result_summary_service import (
+        ensure_automation_failure_summary,
+        ensure_workflow_summary,
+    )
+    for row in rows:
+        try:
+            if row[1] is not None:
+                ensure_workflow_summary(user_id, int(row[1]))
+            else:
+                ensure_automation_failure_summary(
+                    user_id,
+                    int(row[0]),
+                    automation_name=str(row[3] or "自动化"),
+                    project_id=int(row[4]) if row[4] is not None else None,
+                )
+        except Exception:
+            logger.warning("Unable to prepare an automation result summary", exc_info=True)
 
 
 def get_automation(user_id: str, automation_id: int) -> dict[str, Any]:
@@ -257,6 +349,20 @@ def _row(row: tuple[Any, ...]) -> dict[str, Any]:
         "createdAt": row[19].isoformat(),
         "updatedAt": row[20].isoformat(),
     }
+
+
+def _summary_row(row: tuple[Any, ...]) -> dict[str, Any]:
+    item = _row(row[:21])
+    item.update({
+        "projectId": row[21],
+        "projectName": row[22],
+        "lastRunStatus": row[23],
+        "lastResultId": row[24],
+        "lastResultTitle": row[25],
+        "lastResultStatus": row[26],
+        "needsAttention": bool(row[27]),
+    })
+    return item
 
 
 def delete_automation(user_id: str, automation_id: int) -> dict[str, Any]:

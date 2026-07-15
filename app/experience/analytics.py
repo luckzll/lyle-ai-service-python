@@ -16,6 +16,13 @@ def experience_analytics(days: int = 7) -> dict[str, Any]:
         "templates": [], "executionByStatus": [],
         "confirmations": {"viewed": 0, "confirmed": 0, "rejected": 0},
         "failureCategories": [],
+        "northStar": {
+            "windowDays": 7,
+            "twoPlusEffectiveProgressUsers": 0,
+            "eventActiveUsers": 0,
+            "shareOfEventActiveUsers": 0.0,
+            "effectiveProgressActions": 0,
+        },
     }
     if not settings.postgres_enabled:
         return empty
@@ -40,7 +47,27 @@ def experience_analytics(days: int = 7) -> dict[str, Any]:
                WHERE status IN ('failed', 'partial') AND created_at >= now() - (%s * interval '1 day')
                GROUP BY status ORDER BY status""", (days,)
         ).fetchall()
+        north_star_row = conn.execute(
+            """
+            SELECT
+              COUNT(*) FILTER (WHERE effective_actions >= 2),
+              COUNT(*),
+              COALESCE(SUM(effective_actions), 0)
+            FROM (
+              SELECT anonymous_user_id,
+                     COUNT(*) FILTER (
+                       WHERE event_type = 'effective_progress_action'
+                     ) AS effective_actions
+              FROM experience_product_event
+              WHERE created_at >= now() - interval '7 days'
+              GROUP BY anonymous_user_id
+            ) active_users
+            """
+        ).fetchone()
     counts = {str(event_type): int(count) for event_type, count in event_rows}
+    effective_users = int(north_star_row[0] or 0) if north_star_row else 0
+    active_users = int(north_star_row[1] or 0) if north_star_row else 0
+    effective_actions = int(north_star_row[2] or 0) if north_star_row else 0
     return {
         "periodDays": days,
         "funnel": {
@@ -54,4 +81,11 @@ def experience_analytics(days: int = 7) -> dict[str, Any]:
         "executionByStatus": [{"status": status, "count": int(count)} for status, count in execution_rows],
         "confirmations": {"viewed": counts.get("confirmation_viewed", 0), "confirmed": counts.get("confirmation_confirmed", 0), "rejected": counts.get("confirmation_rejected", 0)},
         "failureCategories": [{"category": status, "count": int(count)} for status, count in failure_rows],
+        "northStar": {
+            "windowDays": 7,
+            "twoPlusEffectiveProgressUsers": effective_users,
+            "eventActiveUsers": active_users,
+            "shareOfEventActiveUsers": round(effective_users / active_users, 4) if active_users else 0.0,
+            "effectiveProgressActions": effective_actions,
+        },
     }

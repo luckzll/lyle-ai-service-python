@@ -21,10 +21,13 @@ app/
 ## 当前接口
 
 - GET /health
+- GET /ready（安全配置与向量模型均完成初始化后返回 200）
 - POST /ai/chat
 - POST /ai/ingest
 - GET /ai/ingest/tasks/{task_id}
 - POST /ai/agent/chat
+
+`/health` 仅用于进程存活检查；部署流量应以 `/ready` 为准。Docker 镜像构建会预拉取默认 FastEmbed 模型，服务启动时还会执行一次真实向量预热，避免首个用户请求承担模型下载和加载时间。
 
 ## 执行体验
 

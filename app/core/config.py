@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     tool_web_search_enabled: bool = False
     tool_web_search_provider: str = ""
     tool_web_search_api_key: str = ""
+    # Optional provider endpoint override for an enterprise gateway or deterministic E2E fixture.
+    tool_web_search_base_url: str = ""
     tool_web_search_top_k: int = 5
     # 单条网页搜索摘要长度上限，避免工具上下文过长污染回答。
     tool_web_search_snippet_max_chars: int = 240

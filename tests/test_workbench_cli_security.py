@@ -86,12 +86,19 @@ def test_permission_engine_blocks_dangerous_and_confirms_writes():
 
 
 def test_secret_masker_masks_common_tokens():
-    masked = mask_secrets("token=abc123 password:hello sk-abcdef1234567890 ghp_abcdefghijklmnopqrstuvwxyz")
+    masked = mask_secrets(
+        "token=abc123 password:hello sk-abcdef1234567890 "
+        "ghp_abcdefghijklmnopqrstuvwxyz Authorization: Bearer bearer-secret-value "
+        "postgresql://alice:db-password@db.internal/app"
+    )
 
     assert "abc123" not in masked
     assert "hello" not in masked
     assert "sk-abcdef" not in masked
     assert "ghp_" not in masked
+    assert "bearer-secret-value" not in masked
+    assert "alice" not in masked
+    assert "db-password" not in masked
 
 
 def test_mcp_secret_ref_is_environment_only_and_is_resolved_at_execution(monkeypatch):

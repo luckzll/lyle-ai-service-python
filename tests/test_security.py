@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app import main as main_module
 from app.main import app
 
 
@@ -35,3 +36,18 @@ def test_internal_token_allows_ai_routes(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["short_term"] == []
+
+
+def test_readiness_probe_is_public_but_requires_secure_service_configuration(monkeypatch):
+    monkeypatch.setattr(main_module, "get_embedding_readiness", lambda: {
+        "ready": True,
+        "provider": "hash",
+        "model": "test",
+        "message": "向量模型已加载。",
+    })
+    monkeypatch.setattr(settings, "internal_api_token", "test-internal-token")
+
+    response = TestClient(app).get("/ready")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"

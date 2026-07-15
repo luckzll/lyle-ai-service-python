@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -12,7 +13,12 @@ from app.automation.schedule import next_run_at
 from app.core.config import settings
 from app.core.database import postgres_connection
 from app.security.execution_audit import write_execution_audit
+from app.security.secret_masker import mask_secrets
 from app.workflows.workflow_runner import run_workflow
+from app.workflows.workflow_store import get_workflow
+
+
+logger = logging.getLogger(__name__)
 
 
 def run_automation(
@@ -52,7 +58,10 @@ def run_automation(
         workflow_status = str(workflow_run.get("status") or "failed")
         status = "completed" if workflow_status == "completed" else "failed"
         error_code = workflow_run.get("errorCode") or ("AUTOMATION_CONFIRMATION_REQUIRED" if workflow_status == "paused" else None)
-        error_message = workflow_run.get("errorMessage") or ("自动化工作流需要人工确认。" if workflow_status == "paused" else None)
+        error_message = _safe_error_message(
+            workflow_run.get("errorMessage")
+            or ("自动化工作流需要人工确认。" if workflow_status == "paused" else None)
+        )
         retryable = workflow_status == "failed"
         will_retry, next_at = _finish_automation_run(
             user_id=user_id,
@@ -80,6 +89,12 @@ def run_automation(
             error_code=error_code,
             error_message=error_message,
         )
+        if workflow_run.get("id"):
+            try:
+                from app.experience.result_summary_service import ensure_workflow_summary
+                ensure_workflow_summary(user_id, int(workflow_run["id"]))
+            except Exception:
+                logger.warning("Unable to prepare a workflow result summary for an automation")
         return {
             "id": automation_run_id,
             "automationId": automation_id,
@@ -91,6 +106,7 @@ def run_automation(
             "workflowRun": workflow_run,
         }
     except Exception as exc:
+        safe_error_message = _safe_error_message(str(exc)) or "自动化运行失败。"
         will_retry, next_at = _finish_automation_run(
             user_id=user_id,
             automation=automation,
@@ -98,7 +114,7 @@ def run_automation(
             workflow_run_id=None,
             status="failed",
             error_code="AUTOMATION_RUN_FAILED",
-            error_message=str(exc),
+            error_message=safe_error_message,
             attempt=attempt,
             scheduled=scheduled,
             retryable=True,
@@ -114,8 +130,18 @@ def run_automation(
             status="failed",
             input_summary=json.dumps(payload_input, ensure_ascii=False),
             error_code="AUTOMATION_RUN_FAILED",
-            error_message=str(exc),
+            error_message=safe_error_message,
         )
+        try:
+            from app.experience.result_summary_service import ensure_automation_failure_summary
+            ensure_automation_failure_summary(
+                user_id,
+                automation_run_id,
+                automation_name=str(automation.get("name") or "自动化"),
+                project_id=_workflow_project_id(user_id, automation),
+            )
+        except Exception:
+            logger.warning("Unable to prepare an automation failure summary")
         return {
             "id": automation_run_id,
             "automationId": automation_id,
@@ -125,8 +151,20 @@ def run_automation(
             "willRetry": will_retry,
             "nextRunAt": next_at.isoformat() if next_at else automation.get("nextRunAt"),
             "errorCode": "AUTOMATION_RUN_FAILED",
-            "errorMessage": str(exc),
+            "errorMessage": safe_error_message,
         }
+
+
+def _workflow_project_id(user_id: str, automation: dict[str, Any]) -> int | None:
+    workflow = get_workflow(user_id, int(automation["workflowId"]))
+    project_id = workflow.get("projectId")
+    return int(project_id) if project_id is not None else None
+
+
+def _safe_error_message(value: object | None) -> str | None:
+    if value in (None, ""):
+        return None
+    return mask_secrets(str(value))[:2000]
 
 
 def due_automations(limit: int = 20) -> list[dict[str, Any]]:

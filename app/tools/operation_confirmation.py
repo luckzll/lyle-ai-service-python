@@ -70,14 +70,17 @@ def create_pending_operation(
 
     operation = _operation_row(row)
     already_confirmed = operation.get("status") == "confirmed"
+    already_failed = operation.get("status") == "failed"
     return {
         "ok": True,
         "content": (
             f"该操作已确认过：{summary}。"
             if already_confirmed else
+            f"该操作此前执行失败：{summary}。"
+            if already_failed else
             f"已生成待确认操作：{summary}。用户确认后才会执行。"
         ),
-        "requiresConfirmation": not already_confirmed,
+        "requiresConfirmation": not (already_confirmed or already_failed),
         "operation": operation,
         "idempotentReplay": operation["createdAt"] != now.isoformat(),
     }
@@ -103,21 +106,32 @@ def list_pending_operations(user_id: str, limit: int = 50) -> dict[str, object]:
     return {"items": [_operation_row(row) for row in rows]}
 
 
+def get_pending_operation(user_id: str, operation_id: int) -> dict[str, object]:
+    """Return one user-scoped operation without exposing the storage helper."""
+    _ensure_pending_operation_schema()
+    return _get_operation(user_id, operation_id)
+
+
 def confirm_pending_operation(user_id: str, operation_id: int) -> dict[str, object]:
     _ensure_pending_operation_schema()
     now = datetime.now(UTC)
     with postgres_connection() as conn:
         operation = _get_operation_for_update(conn, user_id, operation_id)
-        if operation.get("status") == "confirmed":
+        if operation.get("status") in {"confirmed", "failed"}:
             conn.commit()
             return {
                 "operation": operation,
                 "result": operation.get("result") or _tool_result(
-                    ok=True,
+                    ok=operation.get("status") == "confirmed",
                     tool=str(operation.get("toolName") or ""),
                     operation_type=str(operation.get("operationType") or ""),
-                    user_message="该操作已经确认执行过，本次没有重复执行。",
+                    user_message=(
+                        "该操作已经确认执行过，本次没有重复执行。"
+                        if operation.get("status") == "confirmed"
+                        else "该操作此前执行失败，本次没有重复执行。"
+                    ),
                     result={},
+                    error_code=None if operation.get("status") == "confirmed" else "PREVIOUS_EXECUTION_FAILED",
                 ),
                 "idempotentReplay": True,
             }
@@ -125,18 +139,23 @@ def confirm_pending_operation(user_id: str, operation_id: int) -> dict[str, obje
             conn.commit()
             raise ValueError("待确认操作不存在或已处理。")
         result = _execute_operation(user_id, operation)
+        succeeded = bool(result.get("ok"))
+        terminal_status = "confirmed" if succeeded else "failed"
         row = conn.execute(
             """
             UPDATE agent_pending_operation
-            SET status = 'confirmed', result = %s::jsonb, updated_at = %s, confirmed_at = %s
+            SET status = %s, result = %s::jsonb, updated_at = %s,
+                confirmed_at = CASE WHEN %s = 'confirmed' THEN %s ELSE NULL END
             WHERE user_id = %s AND id = %s AND status = 'pending'
             RETURNING id, tool_name, operation_type, risk_level, summary, payload,
                       status, result, source_text, created_at, updated_at,
                       confirmed_at, rejected_at, conversation_id, idempotency_key
             """,
             (
+                terminal_status,
                 json.dumps(result, ensure_ascii=False),
                 now,
+                terminal_status,
                 now,
                 user_id,
                 operation_id,
@@ -242,6 +261,37 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
             operation_type=operation_type,
             risk_level=str(operation.get("riskLevel") or "write"),
         )
+    if operation_type == "todo.batch_create":
+        from app.tools.task_tool import create_todo
+
+        items = payload.get("items") if isinstance(payload.get("items"), list) else []
+        created: list[dict[str, object]] = []
+        failures: list[dict[str, object]] = []
+        for item in items[:3]:
+            if not isinstance(item, dict):
+                continue
+            result = create_todo(
+                user_id,
+                conversation_id,
+                str(item.get("title") or ""),
+                _parse_datetime(item.get("dueAt")),
+            )
+            target = created if result.get("ok") else failures
+            target.append({"source": item.get("source"), **result})
+        return _tool_result(
+            ok=bool(created) and not failures and len(created) == len(items),
+            tool="todo",
+            operation_type=operation_type,
+            risk_level=str(operation.get("riskLevel") or "write"),
+            user_message=(
+                f"已创建 {len(created)} 个项目任务。"
+                if not failures else
+                f"创建了 {len(created)} 个项目任务，{len(failures)} 个失败；该批操作未判定成功。"
+            ),
+            result={"created": created, "failures": failures},
+            error_code=None if not failures and len(created) == len(items) else "BATCH_WRITE_FAILED",
+            retryable=False,
+        )
     if operation_type == "calendar.create":
         from app.tools.task_tool import create_calendar_event
 
@@ -264,6 +314,15 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
         from app.connectors.github_connector import execute_github_issue_create
 
         return execute_github_issue_create(payload)
+    if operation_type == "file.patch":
+        from app.agent_tasks.change_preview import apply_workspace_file_patch
+
+        return _normalise_tool_result(
+            apply_workspace_file_patch(user_id, payload),
+            tool="file_patch",
+            operation_type=operation_type,
+            risk_level=str(operation.get("riskLevel") or "write"),
+        )
     return _tool_result(
         ok=False,
         tool=str(operation.get("toolName") or ""),
