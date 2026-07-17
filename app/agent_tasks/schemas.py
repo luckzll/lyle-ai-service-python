@@ -81,6 +81,9 @@ class ExecuteStepRequest(StrictModel):
     artifacts: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
     idempotencyKey: str = Field(min_length=16, max_length=128)
     remainingBudget: dict[str, int]
+    delegatedWriteAuthorized: bool = False
+    grantVersion: int | None = Field(default=None, ge=1)
+    authorizationDecisionId: str | None = Field(default=None, max_length=64)
 
 
 class ToolUsage(StrictModel):
@@ -110,6 +113,7 @@ class ToolResult(StrictModel):
     criterionEvidence: list[ToolCriterionEvidence] = Field(default_factory=list, max_length=20)
     externalStateHashes: dict[str, str] = Field(default_factory=dict)
     usage: ToolUsage = Field(default_factory=ToolUsage)
+    compensation: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def error_fields_match_status(self) -> "ToolResult":

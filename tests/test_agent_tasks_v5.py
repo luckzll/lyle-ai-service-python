@@ -81,6 +81,37 @@ def test_write_plan_proposes_todo_but_never_applies_it() -> None:
     assert plan.steps[-1].riskLevel == "WRITE_LOW"
 
 
+def test_file_patch_plan_carries_workspace_scope_into_the_write_step() -> None:
+    plan = build_plan(PlanRequest.model_validate({
+        "taskId": "patch-1",
+        "userId": "7",
+        "goal": "补充文档并修改文件，应用可撤销 patch",
+        "completionCriteria": ["文档已更新"],
+        "constraints": {
+            "workspaceId": 9,
+            "writeTarget": {
+                "relativePath": "STATUS.md",
+                "expectedSha256": "a" * 64,
+                "newContent": "updated\n",
+            },
+        },
+        "templateId": "project-health",
+        "autonomyLevel": 2,
+        "projectId": 2,
+        "conversationId": None,
+        "budget": _budget(),
+        "toolCatalog": [
+            {"toolRef": "analysis.synthesize", "riskLevel": "READ"},
+            {"toolRef": "file.patch.propose", "riskLevel": "WRITE_LOW"},
+        ],
+    }))
+
+    patch = plan.steps[-1]
+    assert patch.toolRef == "file.patch.propose"
+    assert patch.inputTemplate["workspaceId"] == 9
+    assert patch.inputTemplate["relativePath"] == "STATUS.md"
+
+
 def test_schema_rejects_free_form_error_without_error_code() -> None:
     with pytest.raises(ValidationError):
         ToolResult(status="ERROR", summary="failed")
@@ -382,8 +413,34 @@ def test_full_release_template_has_five_real_read_steps() -> None:
     assert [item.toolRef for item in plan.steps] == [
         "project.inspect", "workspace.git_status", "workspace.docs_check", "release.check", "analysis.synthesize",
     ]
+    assert plan.steps[1].dependencies == ["inspect_project"]
+    assert plan.steps[2].dependencies == ["inspect_project"]
+    assert plan.steps[3].dependencies == ["inspect_project"]
+    assert plan.steps[4].dependencies == ["git_status", "docs_check", "release_check"]
     assert plan.accessScope["workspaceIds"] == [9]
     assert plan.steps[3].inputTemplate["commands"] == ["pytest -q"]
+
+
+def test_project_health_template_runs_real_tests_without_exceeding_five_read_steps() -> None:
+    catalog = [
+        {"toolRef": "project.inspect", "riskLevel": "READ"},
+        {"toolRef": "workspace.git_status", "riskLevel": "READ"},
+        {"toolRef": "workspace.docs_check", "riskLevel": "READ"},
+        {"toolRef": "release.check", "riskLevel": "READ"},
+        {"toolRef": "analysis.synthesize", "riskLevel": "READ"},
+    ]
+    plan = build_plan(PlanRequest.model_validate({
+        "taskId": "health-1", "userId": "7", "goal": "检查项目健康状态",
+        "completionCriteria": ["项目状态与测试证据已检查", "任务和文档缺口已列出", "异常与建议可追溯"],
+        "constraints": {"workspaceId": 9},
+        "templateId": "project-inspection", "autonomyLevel": 1, "projectId": 2,
+        "conversationId": None, "budget": _budget(), "toolCatalog": catalog,
+    }))
+
+    assert [item.toolRef for item in plan.steps] == [
+        "project.inspect", "workspace.git_status", "workspace.docs_check", "release.check", "analysis.synthesize",
+    ]
+    assert plan.steps[-1].dependencies == ["release_check"]
 
 
 def test_release_check_runs_authorized_command_and_maps_only_release_criteria(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -396,15 +453,100 @@ def test_release_check_runs_authorized_command_and_maps_only_release_criteria(mo
     result = execute_approved_step(ExecuteStepRequest.model_validate({
         "taskId": "1", "taskRunId": "1", "stepRunId": "7", "userId": "7",
         "conversationId": None, "goal": "发布检查",
-        "completionCriteria": ["读取项目概览", "所有测试通过", "给出 Go/No-Go 结论"],
+        "completionCriteria": ["读取项目概览", "所有测试通过", "项目状态与测试证据已检查", "给出 Go/No-Go 结论"],
         "toolRef": "release.check", "input": {"workspaceId": 9, "commands": ["pytest -q"]},
         "artifacts": [], "idempotencyKey": "a" * 64,
         "remainingBudget": {"steps": 2, "toolCalls": 2, "modelTokens": 1000, "costMicros": 1000, "wallTimeMillis": 10000},
     }))
     assert result.status == "SUCCESS"
     assert result.evidenceRefs == ["cli-command://77"]
-    assert {item.criterion for item in result.criterionEvidence} == {"所有测试通过"}
+    assert {item.criterion for item in result.criterionEvidence} == {"所有测试通过", "项目状态与测试证据已检查"}
     assert result.externalStateHashes == {"workspace:9": "state-1"}
+
+
+def test_research_search_and_synthesis_complete_all_default_weekly_criteria(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    criteria = ["指定主题已检索", "新增资料已去重并保留来源", "形成周期报告与冲突说明"]
+    monkeypatch.setattr("app.agent_tasks.tool_executor.execute_tool", lambda *_args: {
+        "ok": True,
+        "content": "untrusted body",
+        "criterionEvidence": [],
+        "results": [
+            {"title": "Source A", "url": "https://fixture.example/path?tracking=1"},
+            {"title": "Source A duplicate", "url": "https://fixture.example/other"},
+        ],
+    })
+    search = execute_approved_step(ExecuteStepRequest.model_validate({
+        "taskId": "research-1", "taskRunId": "1", "stepRunId": "10", "userId": "7",
+        "conversationId": None, "goal": "调研可信委托", "completionCriteria": criteria,
+        "toolRef": "research.search", "input": {"query": "可信委托"}, "artifacts": [],
+        "idempotencyKey": "r" * 64,
+        "remainingBudget": {"steps": 2, "toolCalls": 2, "modelTokens": 1000, "costMicros": 1000, "wallTimeMillis": 10000},
+    }))
+    assert search.evidenceRefs == ["tool-result://10", "https://fixture.example"]
+    assert {item.criterion: item.status for item in search.criterionEvidence} == {
+        "指定主题已检索": "COMPLETE",
+        "新增资料已去重并保留来源": "COMPLETE",
+    }
+
+    synthesis = execute_approved_step(ExecuteStepRequest.model_validate({
+        "taskId": "research-1", "taskRunId": "1", "stepRunId": "11", "userId": "7",
+        "conversationId": None, "goal": "调研可信委托", "completionCriteria": criteria,
+        "toolRef": "analysis.synthesize", "input": {"mode": "research"},
+        "artifacts": [{
+            "summary": search.summary,
+            "contentRef": search.dataRef,
+            "evidenceRefs": search.evidenceRefs,
+            "metadata": {
+                "toolRef": "research.search", "redacted": search.redacted,
+                "criterionEvidence": [item.model_dump() for item in search.criterionEvidence],
+            },
+        }],
+        "idempotencyKey": "s" * 64,
+        "remainingBudget": {"steps": 1, "toolCalls": 1, "modelTokens": 1000, "costMicros": 1000, "wallTimeMillis": 10000},
+    }))
+    assert [item.criterion for item in synthesis.criterionEvidence] == ["形成周期报告与冲突说明"]
+
+    reviewed = review_result(ReviewResultRequest.model_validate({
+        "taskId": "research-1", "goal": "调研可信委托", "completionCriteria": criteria,
+        "steps": [{"status": "SUCCEEDED"}, {"status": "SUCCEEDED"}],
+        "artifacts": [
+            {
+                "summary": search.summary,
+                "contentRef": search.dataRef,
+                "evidenceRefs": search.evidenceRefs,
+                "metadata": {"criterionEvidence": [item.model_dump() for item in search.criterionEvidence]},
+            },
+            {
+                "summary": synthesis.summary,
+                "contentRef": synthesis.dataRef,
+                "evidenceRefs": synthesis.evidenceRefs,
+                "metadata": {"criterionEvidence": [item.model_dump() for item in synthesis.criterionEvidence]},
+            },
+        ],
+        "budgetUsed": {},
+    }))
+    assert reviewed.outcome == "COMPLETE"
+
+
+def test_research_source_criterion_stays_incomplete_without_a_durable_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.agent_tasks.tool_executor.execute_tool", lambda *_args: {
+        "ok": True, "content": "no results", "results": [],
+    })
+    result = execute_approved_step(ExecuteStepRequest.model_validate({
+        "taskId": "research-2", "taskRunId": "1", "stepRunId": "12", "userId": "7",
+        "conversationId": None, "goal": "调研", "completionCriteria": ["指定主题已检索", "新增资料已去重并保留来源"],
+        "toolRef": "research.search", "input": {"query": "主题"}, "artifacts": [],
+        "idempotencyKey": "t" * 64,
+        "remainingBudget": {"steps": 1, "toolCalls": 1, "modelTokens": 1000, "costMicros": 1000, "wallTimeMillis": 10000},
+    }))
+    assert {item.criterion: item.status for item in result.criterionEvidence} == {
+        "指定主题已检索": "COMPLETE",
+        "新增资料已去重并保留来源": "INCOMPLETE",
+    }
 
 
 def test_synthesis_owns_conclusion_criterion_and_reuses_prior_evidence() -> None:

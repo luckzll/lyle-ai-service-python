@@ -27,6 +27,7 @@ from app.api.tools import router as tools_router
 from app.api.workbench import router as workbench_router
 from app.api.experience import router as experience_router
 from app.api.agent_tasks import router as agent_tasks_router
+from app.api.missions import router as missions_router
 from app.core.config import settings
 from app.core.database import close_postgres_pool
 from app.core.logging_config import configure_logging
@@ -138,3 +139,4 @@ app.include_router(rag_debug_router, prefix="/ai", tags=["rag-debug"])
 app.include_router(workbench_router, prefix="/ai", tags=["workbench"])
 app.include_router(experience_router, prefix="/ai", tags=["experience"])
 app.include_router(agent_tasks_router, prefix="/internal", tags=["agent-tasks-internal"])
+app.include_router(missions_router, prefix="/internal", tags=["missions-internal"])

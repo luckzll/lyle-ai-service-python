@@ -14,6 +14,7 @@ from app.cli.workspace_store import get_workspace
 from app.projects.project_store import get_project_overview
 from app.security.secret_masker import mask_secrets
 from app.tools.tool_registry import execute_tool
+from app.missions.delegated_actions import execute_delegated_action
 
 
 TOOL_MAPPING = {
@@ -26,6 +27,8 @@ SAFE_SOURCE_HOST = re.compile(r"(?=.{1,253}\Z)[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-
 
 
 def execute_approved_step(request: ExecuteStepRequest) -> ToolResult:
+    if request.toolRef in {"todo.propose", "file.patch.propose"}:
+        return execute_delegated_action(request)
     if request.toolRef == "project.inspect":
         return _project_inspect(request)
     if request.toolRef == "analysis.synthesize":
@@ -213,7 +216,7 @@ def _synthesize(request: ExecuteStepRequest) -> ToolResult:
                 "note": "已基于前序证据形成结论。" if evidence else "缺少前序证据，无法形成结论。",
             }
             for criterion in (_criterion_text(item) for item in request.completionCriteria)
-            if _is_conclusion_criterion(criterion)
+            if _is_conclusion_criterion(criterion) and not _is_mutation_criterion(criterion)
         ],
     )
 
@@ -412,7 +415,9 @@ def _criterion_evidence(
 ) -> list[dict[str, Any]]:
     explicit = raw_result.get("criterionEvidence")
     if isinstance(explicit, list):
-        return [item for item in explicit if isinstance(item, dict)]
+        explicit_mappings = [item for item in explicit if isinstance(item, dict)]
+        if explicit_mappings:
+            return explicit_mappings
     result: list[dict[str, Any]] = []
     for raw in criteria:
         criterion = _criterion_text(raw)
@@ -428,6 +433,11 @@ def _criterion_evidence(
         if not supported:
             continue
         criterion_ok = ok
+        if tool_ref == "research.search" and _requires_source_evidence(criterion):
+            results = raw_result.get("results")
+            criterion_ok = criterion_ok and isinstance(results, list) and any(
+                _safe_source_url(item) for item in results
+            )
         if tool_ref == "workspace.git_status" and _requires_clean_git(criterion):
             criterion_ok = criterion_ok and bool(raw_result.get("gitClean"))
         status = "COMPLETE" if criterion_ok and evidence_refs else "INCOMPLETE"
@@ -442,6 +452,19 @@ def _criterion_evidence(
 
 def _is_mutation_criterion(value: str) -> bool:
     lowered = value.lower()
+    research_observation = (
+        any(word in lowered for word in [
+            "资料", "来源", "引用", "调研", "检索", "搜索", "research", "source",
+        ])
+        and any(word in lowered for word in [
+            "去重", "保留", "检索", "搜索", "收集", "对比", "deduplic", "retain", "search",
+        ])
+        and not any(word in lowered for word in [
+            "任务", "待办", "文件", "日程", "记录", "数据库", "patch", "todo", "file", "calendar", "database",
+        ])
+    )
+    if research_observation:
+        return False
     return any(word in lowered for word in [
         "创建", "新增", "写入", "修改", "删除", "应用 patch", "apply patch",
         "create ", "add ", "write ", "update ", "delete ", "任务草稿", "todo draft",
@@ -455,9 +478,19 @@ def _requires_clean_git(value: str) -> bool:
     ])
 
 
+def _requires_source_evidence(value: str) -> bool:
+    lowered = value.lower()
+    return any(word in lowered for word in [
+        "来源", "引用", "资料", "source", "citation", "reference",
+    ])
+
+
 def _is_conclusion_criterion(value: str) -> bool:
     lowered = value.lower()
-    return any(word in lowered for word in ["给出", "结论", "建议", "summary", "recommendation"])
+    return any(word in lowered for word in [
+        "给出", "结论", "建议", "报告", "周报", "冲突说明",
+        "summary", "recommendation", "report", "conflict note",
+    ])
 
 
 def _release_criterion_evidence(
@@ -498,7 +531,9 @@ def _criterion_category(value: str) -> str:
         return "docs"
     if any(word in lowered for word in ["git", "代码状态", "工作区"]):
         return "git"
-    if any(word in lowered for word in ["引用", "来源", "资料", "调研", "对比", "research"]):
+    if any(word in lowered for word in [
+        "引用", "来源", "资料", "调研", "对比", "检索", "搜索", "research", "search",
+    ]):
         return "research"
     if any(word in lowered for word in ["项目", "任务", "待办", "目标", "进度"]):
         return "project"
@@ -514,7 +549,15 @@ def _evidence(result: dict[str, object], request: ExecuteStepRequest) -> list[An
         refs.extend(
             value for value in (_safe_source_url(item) for item in result["results"][:49]) if value
         )
-    return refs
+    deduplicated: list[Any] = []
+    seen: set[str] = set()
+    for ref in refs:
+        key = json.dumps(ref, ensure_ascii=False, sort_keys=True, default=str)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduplicated.append(ref)
+    return deduplicated[:50]
 
 
 def _safe_source_url(value: Any) -> str | None:

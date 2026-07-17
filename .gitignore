@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+LLM_API_KEYS_AND_MODELS.private.txt
 
 .venv/
 .venv*/

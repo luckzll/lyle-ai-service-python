@@ -79,9 +79,9 @@ def _steps_for_template(template: str, request: PlanRequest, allowed: dict[str, 
         candidates = [
             _step("inspect_project", "READ", "读取项目现状", "读取目标项目、目标、计划和待办的实时摘要。", "project.inspect", "READ", _project_input(request)),
             _step("git_status", "TOOL", "检查 Git 状态", "读取授权工作区的 Git 状态并保留命令证据。", "workspace.git_status", "READ", workspace_input, ["inspect_project"]),
-            _step("docs_check", "READ", "检查发布文档", "检查 README 与 docs 文档是否存在并保留文件证据。", "workspace.docs_check", "READ", workspace_input, ["git_status"]),
-            _step("release_check", "TOOL", "运行授权测试", "在授权工作区运行白名单测试命令，记录退出码和摘要。", "release.check", "READ", {**workspace_input, "commands": _release_commands(request)}, ["docs_check"]),
-            _step("synthesize", "ANALYZE", "形成 Go/No-Go 建议", "对照完成标准整理证据、阻塞项和发布建议。", "analysis.synthesize", "READ", {"mode": "release"}, ["release_check"]),
+            _step("docs_check", "READ", "检查发布文档", "检查 README 与 docs 文档是否存在并保留文件证据。", "workspace.docs_check", "READ", workspace_input, ["inspect_project"]),
+            _step("release_check", "TOOL", "运行授权测试", "在授权工作区运行白名单测试命令，记录退出码和摘要。", "release.check", "READ", {**workspace_input, "commands": _release_commands(request)}, ["inspect_project"]),
+            _step("synthesize", "ANALYZE", "形成 Go/No-Go 建议", "对照完成标准整理证据、阻塞项和发布建议。", "analysis.synthesize", "READ", {"mode": "release"}, ["git_status", "docs_check", "release_check"]),
         ]
     else:
         workspace_input = _workspace_input(request)
@@ -89,7 +89,8 @@ def _steps_for_template(template: str, request: PlanRequest, allowed: dict[str, 
             _step("inspect_project", "READ", "读取项目状态", "检查目标项目、目标、计划、待办及其关联。", "project.inspect", "READ", _project_input(request)),
             _step("git_status", "TOOL", "检查 Git 状态", "读取授权工作区的 Git 状态，不修改仓库。", "workspace.git_status", "READ", workspace_input, ["inspect_project"]),
             _step("docs_check", "READ", "检查项目文档", "检查 README 与 docs 文档并保留证据。", "workspace.docs_check", "READ", workspace_input, ["git_status"]),
-            _step("inspect_memory", "READ", "核对相关上下文", "读取授权记忆快照，核对偏好和既有事实。", "memory.snapshot", "READ", {"question": "{{goal}}"}, ["docs_check"]),
+            _step("release_check", "TOOL", "运行项目测试", "在授权工作区运行白名单测试命令，记录退出码和摘要。", "release.check", "READ", {**workspace_input, "commands": _release_commands(request)}, ["docs_check"]),
+            _step("inspect_memory", "READ", "核对相关上下文", "读取授权记忆快照，核对偏好和既有事实。", "memory.snapshot", "READ", {"question": "{{goal}}"}, ["release_check"]),
             _step("synthesize", "ANALYZE", "汇总风险与下一步", "对照完成标准整理事实、证据、缺口与建议。", "analysis.synthesize", "READ", {"mode": "inspection"}, ["inspect_memory"]),
         ]
     skipped = {str(item) for item in request.constraints.get("skipToolRefs", [])} if isinstance(request.constraints.get("skipToolRefs"), list) else set()
@@ -135,9 +136,10 @@ def _write_step(request: PlanRequest, allowed: dict[str, str], dependency: str |
         ))
     write_target = constraints.get("writeTarget") if isinstance(constraints.get("writeTarget"), dict) else {}
     if "file.patch.propose" in allowed and write_target and any(word in goal for word in ["修改文件", "patch", "补充文档"]):
+        patch_input = {**write_target, **_workspace_input(request)}
         return PlanStep.model_validate(_step(
             "propose_patch", "PROPOSE_CHANGE", "提出文件 Patch", "生成文件差异并等待单次确认。",
-            "file.patch.propose", "WRITE_LOW", write_target, [dependency] if dependency else [], True,
+            "file.patch.propose", "WRITE_LOW", patch_input, [dependency] if dependency else [], True,
         ))
     return None
 
