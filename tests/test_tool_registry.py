@@ -1,7 +1,11 @@
+import threading
+import time
+
 from app.core.config import settings
-from app.api.chat import _image_generate_answer, _strip_unbacked_image_markdown
+from app.api.chat import _image_generate_answer, _stream_image_tool, _strip_unbacked_image_markdown
 from app.agents.tool_agent import decide_tool_use
 from app.tools import image_tool
+from app.tools.image_intent import is_image_generation_request
 from app.tools.tool_registry import execute_tool, list_available_tools, select_tools
 from app.tools import weather_tool
 from app.tools.web_search_tool import search_web
@@ -21,6 +25,9 @@ def test_select_tools_detects_memory_stats_and_web_search():
     assert "image_analyze" in select_tools("帮我看图 https://example.com/a.png 里面有什么")
     assert "image_generate" in select_tools("帮我生成一张赛博朋克猫")
     assert "image_edit" in select_tools("把这张图背景换成雪山 图片：https://example.com/a.png")
+    assert "image_edit" in select_tools(
+        "参考这两张图生成 4 张海报 图片1：https://example.com/a.png 图片2：https://example.com/b.png"
+    )
     assert "image_generate" in select_tools("再来个小狗狗，相比于小猫我跟喜欢小狗")
     assert "image_generate" in select_tools("换成一只小狗")
     assert "todo" in select_tools("创建待办：写测试")
@@ -31,6 +38,64 @@ def test_select_tools_does_not_web_search_for_plain_chat():
     assert "web_search" not in select_tools("随便聊聊")
     assert "web_search" not in select_tools("你记得我喜欢什么吗")
     assert "image_generate" not in select_tools("把这段话改成英文")
+
+
+def test_image_generation_concept_discussion_never_starts_billable_tool():
+    questions = [
+        "请用一句话说明批量生图的价值",
+        "批量生图有哪些应用",
+        "如何使用文生图功能",
+        "生图模型是什么意思",
+        "你支持批量生图吗",
+        "生成 4 张图片的成本是多少？",
+    ]
+
+    for question in questions:
+        assert is_image_generation_request(question) is False
+        assert "image_generate" not in select_tools(question)
+        assert _stream_image_tool(question) is None
+
+    assert image_tool.parse_image_count("请用一句话说明批量生图的价值") == 1
+
+
+def test_explicit_image_generation_commands_still_route_to_image_tool():
+    questions = [
+        "帮我生成一张赛博朋克猫",
+        "生成 4 张不同构图的猫",
+        "请批量生图：猫",
+        "生图：猫",
+        "画一只猫",
+        "再来个小狗狗，相比于小猫我更喜欢小狗",
+        "换成一只小狗",
+        "请生成一张关于批量生图价值的海报",
+    ]
+
+    for question in questions:
+        assert is_image_generation_request(question) is True
+        assert "image_generate" in select_tools(question)
+        assert _stream_image_tool(question) == "image_generate"
+
+    assert image_tool.parse_image_count("生成 4 张不同构图的猫") == 4
+    assert image_tool.parse_image_count("请批量生图：猫") == 4
+
+
+def test_llm_router_cannot_override_image_generation_billing_guard(monkeypatch):
+    monkeypatch.setattr(settings, "tool_agent_enabled", True)
+    monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
+    monkeypatch.setattr(settings, "tool_router_confidence_threshold", 0.65)
+    monkeypatch.setattr("app.agents.tool_agent._route_tools_with_context", lambda *args: {
+        "selected_tools": ["image_generate"],
+        "tool_inputs": {"image_generate": "生成 4 张批量生图价值海报"},
+        "reason": "误判为文生图",
+        "confidence": 0.99,
+        "needs_clarification": False,
+        "router": "llm",
+    })
+
+    decision = decide_tool_use("u1", "c1", "请用一句话说明批量生图的价值", True)
+
+    assert decision["should_call_tools"] is False
+    assert decision["selected_tools"] == []
 
 
 def test_image_edit_excludes_image_generate(monkeypatch):
@@ -335,6 +400,135 @@ def test_image_generate_tool_returns_image_markdown(monkeypatch):
     assert "![生成图片](https://example.com/generated.png)" in result["content"]
 
 
+def test_image_generate_batch_runs_model_requests_concurrently(monkeypatch):
+    monkeypatch.setattr(settings, "ark_api_key", "fake-key")
+    monkeypatch.setattr(settings, "image_model_name", "doubao-seedream-test")
+    monkeypatch.setattr(settings, "generated_image_storage", "local")
+    monkeypatch.setattr(settings, "image_batch_max_count", 8)
+    monkeypatch.setattr(settings, "image_batch_concurrency", 8)
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+    sequence = 0
+
+    def fake_post_json(path, payload, timeout=None):
+        nonlocal active, max_active, sequence
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+            sequence += 1
+            current = sequence
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return {"data": [{"url": f"https://example.com/generated-{current}.png"}]}
+
+    monkeypatch.setattr(image_tool, "_post_json", fake_post_json)
+
+    result = image_tool.generate_image_from_question("生成 4 张不同构图的赛博朋克猫")
+
+    assert result["ok"] is True
+    assert result["requestedCount"] == 4
+    assert result["completedCount"] == 4
+    assert len(result["imageUrls"]) == 4
+    assert result["prompt"] == "不同构图的赛博朋克猫"
+    assert max_active > 1
+    assert result["batchStatus"] == "COMPLETED"
+
+
+def test_image_generate_retries_provider_rate_limit(monkeypatch):
+    monkeypatch.setattr(settings, "ark_api_key", "fake-key")
+    monkeypatch.setattr(settings, "generated_image_storage", "local")
+    monkeypatch.setattr(settings, "image_batch_retry_attempts", 2)
+    monkeypatch.setattr(settings, "image_batch_retry_base_seconds", 0)
+    calls = 0
+
+    def fake_post_json(path, payload, timeout=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("图片模型请求失败：HTTP 429 rate limited")
+        return {"data": [{"url": "https://example.com/retried.png"}]}
+
+    monkeypatch.setattr(image_tool, "_post_json", fake_post_json)
+
+    result = image_tool.generate_image_from_question("生成一张重试测试图")
+
+    assert calls == 2
+    assert result["batchStatus"] == "COMPLETED"
+    assert result["imageUrl"] == "https://example.com/retried.png"
+
+
+def test_image_edit_passes_all_reference_images_to_every_variation(monkeypatch):
+    monkeypatch.setattr(settings, "ark_api_key", "fake-key")
+    monkeypatch.setattr(settings, "image_model_name", "doubao-seedream-test")
+    monkeypatch.setattr(settings, "generated_image_storage", "local")
+    calls = []
+
+    def fake_post_image_edit_json(payload, image_urls):
+        calls.append(image_urls)
+        return {"data": [{"url": f"https://example.com/edited-{len(calls)}.png"}]}
+
+    monkeypatch.setattr(image_tool, "_post_image_edit_json", fake_post_image_edit_json)
+    result = image_tool.edit_image_from_question(
+        "参考这些图片生成 3 张海报 "
+        "图片1：https://example.com/a.png 图片2：https://example.com/b.png"
+    )
+
+    assert result["ok"] is True
+    assert result["completedCount"] == 3
+    assert result["sourceImageRefs"] == [
+        "https://example.com/a.png",
+        "https://example.com/b.png",
+    ]
+    assert calls == [
+        ["https://example.com/a.png", "https://example.com/b.png"],
+        ["https://example.com/a.png", "https://example.com/b.png"],
+        ["https://example.com/a.png", "https://example.com/b.png"],
+    ]
+
+
+def test_image_count_prefers_generated_output_count_over_reference_count(monkeypatch):
+    monkeypatch.setattr(settings, "image_batch_max_count", 8)
+
+    spec = image_tool.build_image_batch_spec(
+        "参考这两张图的构图，生成四张不同风格的海报 "
+        "图片1：https://example.com/a.png 图片2：https://example.com/b.png",
+        "edit",
+    )
+
+    assert spec["count"] == 4
+    assert spec["referenceImageRefs"] == [
+        "https://example.com/a.png",
+        "https://example.com/b.png",
+    ]
+
+
+def test_image_analyze_sends_all_images_in_one_vision_request(monkeypatch):
+    monkeypatch.setattr(settings, "ark_api_key", "fake-key")
+    captured = {}
+
+    def fake_post_json(path, payload, timeout=None):
+        captured.update(payload)
+        return {"choices": [{"message": {"content": "两张图的共同点"}}]}
+
+    monkeypatch.setattr(image_tool, "_post_json", fake_post_json)
+    result = image_tool.analyze_image_from_question(
+        "对比这两张图 图片1：https://example.com/a.png 图片2：https://example.com/b.png"
+    )
+
+    image_parts = [
+        item for item in captured["messages"][0]["content"]
+        if item["type"] == "image_url"
+    ]
+    assert result["ok"] is True
+    assert result["imageRefs"] == ["https://example.com/a.png", "https://example.com/b.png"]
+    assert [item["image_url"]["url"] for item in image_parts] == [
+        "https://example.com/a.png",
+        "https://example.com/b.png",
+    ]
+
+
 def test_image_generate_uploads_to_tos(monkeypatch):
     monkeypatch.setattr(settings, "ark_api_key", "fake-key")
     monkeypatch.setattr(settings, "image_model_name", "doubao-seedream-test")
@@ -412,8 +606,8 @@ def test_image_edit_tool_returns_image_markdown(monkeypatch):
     monkeypatch.setattr(settings, "generated_image_storage", "local")
     calls = []
 
-    def fake_post_image_edit_json(payload, image_url):
-        calls.append((payload, image_url))
+    def fake_post_image_edit_json(payload, image_urls):
+        calls.append((payload, image_urls))
         return {"data": [{"url": "https://example.com/edited.png"}]}
 
     monkeypatch.setattr(image_tool, "_post_image_edit_json", fake_post_image_edit_json)
@@ -425,7 +619,7 @@ def test_image_edit_tool_returns_image_markdown(monkeypatch):
     assert result["sourceImageRef"] == "https://example.com/source.png"
     assert "![修改后图片](https://example.com/edited.png)" in result["content"]
     assert calls[0][0]["watermark"] is False
-    assert calls[0][1] == "https://example.com/source.png"
+    assert calls[0][1] == ["https://example.com/source.png"]
 
 
 def test_image_analyze_requires_image_ref(monkeypatch):

@@ -1,6 +1,7 @@
 from app.core.config import settings
 from app.chains.tool_router_chain import route_tools_with_llm
 from app.memory.store import format_memory_context, recall_memory
+from app.tools.image_intent import is_image_generation_request
 from app.tools.tool_registry import execute_tool, format_tool_context, select_tools
 
 
@@ -84,6 +85,8 @@ def decide_tool_use(
 
     router_decision = _route_tools_with_context(user_id, conversation_id, question)
     selected_tools = _merge_tools(rule_selected_tools, router_decision.get("selected_tools") or [])
+    if "image_generate" in selected_tools and not is_image_generation_request(question):
+        selected_tools = [tool_name for tool_name in selected_tools if tool_name != "image_generate"]
     tool_inputs = router_decision.get("tool_inputs") or {}
     confidence = _decision_confidence(router_decision)
 

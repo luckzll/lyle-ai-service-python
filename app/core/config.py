@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     tool_image_analyze_enabled: bool = True
     tool_image_generate_enabled: bool = True
     tool_image_edit_enabled: bool = True
+    # 单批最多生成 8 张，并允许模型 API 请求高并发。两个值均可通过环境变量覆盖。
+    image_batch_max_count: int = 8
+    image_batch_concurrency: int = 8
+    image_batch_retry_attempts: int = 2
+    image_batch_retry_base_seconds: float = 0.6
+    image_reference_max_count: int = 8
     # V3 轻量连接器：本地文档只允许读取白名单目录；GitHub 先支持只读能力。
     connector_local_docs_roots: str = "../.."
     connector_local_docs_max_files: int = 200

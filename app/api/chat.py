@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import uuid
 from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -22,6 +23,14 @@ from app.schemas.chat import ChatRequest, ChatResponse, Source, Usage
 from app.workflows.chat_suggestions import build_execution_suggestions
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
+from app.tools.image_tool import (
+    analyze_image_from_question,
+    build_image_batch_result,
+    build_image_batch_spec,
+    extract_image_refs,
+    iter_image_batch_results,
+)
+from app.tools.tool_audit import audit_tool_call
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,6 +160,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
 
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
+    image_tool = _stream_image_tool(request.message)
+    if image_tool:
+        return _image_chat_stream(request, image_tool)
+
     request_started = perf_counter()
     logger.info(
         "chat_stream timing start. user_id=%s conversation_id=%s message_chars=%s knowledge_bases=%s",
@@ -477,6 +490,229 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             request.ai_config,
             True,
         )
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream; charset=utf-8",
+        background=BackgroundTask(write_memory_after_stream),
+    )
+
+
+def _stream_image_tool(message: str) -> str | None:
+    selected = select_tools(message)
+    if "image_edit" in selected:
+        return "image_edit"
+    if "image_generate" in selected:
+        return "image_edit" if extract_image_refs(message) else "image_generate"
+    if "image_analyze" in selected:
+        return "image_analyze"
+    return None
+
+
+def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingResponse:
+    turn_id = request.turn_id or uuid.uuid4().hex
+    final_answer_holder: dict[str, str] = {}
+
+    def generate():
+        started = perf_counter()
+        yield _sse("turn.status", {
+            "turnId": turn_id,
+            "phase": "THINKING",
+            "message": "正在理解图片需求…",
+        })
+        try:
+            with temporary_ai_config(request.ai_config):
+                if tool_name == "image_analyze":
+                    refs = extract_image_refs(request.message)
+                    yield _sse("turn.status", {
+                        "turnId": turn_id,
+                        "phase": "ANALYZING",
+                        "message": f"正在分析 {len(refs)} 张图片…",
+                    })
+                    result = analyze_image_from_question(request.message)
+                    answer = str(result.get("content") or "图片分析没有返回结果。")
+                    elapsed_ms = int((perf_counter() - started) * 1000)
+                    tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
+                    audit_tool_call(
+                        tool_name=tool_name,
+                        user_id=request.user_id,
+                        conversation_id=request.conversation_id,
+                        question=request.message,
+                        ok=bool(result.get("ok")),
+                        content=answer,
+                        elapsed_ms=elapsed_ms,
+                    )
+                    yield _sse("delta", {"text": answer})
+                    yield _sse("meta", {
+                        "sources": [],
+                        "agentTrace": [{
+                            "agent": "tool_agent",
+                            "tool": tool_name,
+                            "imageCount": len(refs),
+                            "streaming": True,
+                        }],
+                        "toolResults": [tool_result],
+                        "review": {"approved": bool(result.get("ok")), "reason": "image analysis"},
+                    })
+                    final_answer_holder["answer"] = answer
+                    yield _sse("turn.status", {
+                        "turnId": turn_id,
+                        "phase": "COMPLETED" if result.get("ok") else "FAILED",
+                        "message": "图片分析完成" if result.get("ok") else "图片分析失败",
+                    })
+                    yield _sse("done", {"turnId": turn_id})
+                    return
+
+                mode = "edit" if tool_name == "image_edit" else "generate"
+                spec = build_image_batch_spec(request.message, mode)
+                batch_id = str(spec["batchId"])
+                count = int(spec["count"])
+                concurrency = max(1, min(count, int(settings.image_batch_concurrency), 32))
+                yield _sse("turn.status", {
+                    "turnId": turn_id,
+                    "phase": "GENERATING",
+                    "message": f"正在生成 {count} 张图片…",
+                })
+                yield _sse("image.batch.started", {
+                    "turnId": turn_id,
+                    "batchId": batch_id,
+                    "count": count,
+                    "mode": mode,
+                    "concurrency": concurrency,
+                    "referenceCount": len(spec.get("referenceImageRefs") or []),
+                    "items": [
+                        {
+                            "index": index,
+                            "status": "RUNNING" if index < concurrency else "QUEUED",
+                        }
+                        for index in range(count)
+                    ],
+                })
+                items: list[dict[str, object]] = []
+                completed_count = 0
+                for item in iter_image_batch_results(spec):
+                    items.append(item)
+                    index = int(item.get("index") or 0)
+                    if item.get("status") == "COMPLETED":
+                        completed_count += 1
+                        yield _sse("image.item.completed", {
+                            "turnId": turn_id,
+                            "batchId": batch_id,
+                            **item,
+                            "completedCount": completed_count,
+                            "count": count,
+                        })
+                    else:
+                        yield _sse("image.item.failed", {
+                            "turnId": turn_id,
+                            "batchId": batch_id,
+                            **item,
+                            "completedCount": completed_count,
+                            "count": count,
+                        })
+                    yield _sse("turn.status", {
+                        "turnId": turn_id,
+                        "phase": "GENERATING",
+                        "message": f"已完成 {completed_count} / {count} 张图片",
+                    })
+
+                result = build_image_batch_result(spec, items)
+                answer = str(result.get("content") or "图片生成没有返回结果。")
+                elapsed_ms = int((perf_counter() - started) * 1000)
+                tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
+                audit_tool_call(
+                    tool_name=tool_name,
+                    user_id=request.user_id,
+                    conversation_id=request.conversation_id,
+                    question=request.message,
+                    ok=bool(result.get("ok")),
+                    content=answer,
+                    elapsed_ms=elapsed_ms,
+                )
+                final_answer_holder["answer"] = answer
+                yield _sse("image.batch.completed", {
+                    "turnId": turn_id,
+                    "batchId": batch_id,
+                    "status": result.get("batchStatus"),
+                    "count": count,
+                    "completedCount": result.get("completedCount", 0),
+                    "failedCount": result.get("failedCount", 0),
+                })
+                yield _sse("turn.status", {
+                    "turnId": turn_id,
+                    "phase": "RESPONDING",
+                    "message": "正在整理生成结果…",
+                })
+                yield _sse("delta", {"text": answer})
+                yield _sse("meta", {
+                    "sources": [],
+                    "agentTrace": [{
+                        "agent": "tool_agent",
+                        "tool": tool_name,
+                        "batchId": batch_id,
+                        "requestedCount": count,
+                        "completedCount": result.get("completedCount", 0),
+                        "elapsedMillis": elapsed_ms,
+                        "streaming": True,
+                    }],
+                    "toolResults": [tool_result],
+                    "review": {
+                        "approved": bool(result.get("ok")),
+                        "reason": str(result.get("batchStatus") or "image batch"),
+                    },
+                })
+                yield _sse("turn.status", {
+                    "turnId": turn_id,
+                    "phase": "COMPLETED" if result.get("ok") else "FAILED",
+                    "message": (
+                        f"已完成 {result.get('completedCount', 0)} 张图片"
+                        if result.get("ok")
+                        else "图片生成失败"
+                    ),
+                })
+                yield _sse("done", {"turnId": turn_id})
+        except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            logger.info(
+                "Streaming image batch cancelled. user_id=%s conversation_id=%s turn_id=%s",
+                request.user_id,
+                request.conversation_id,
+                turn_id,
+            )
+            raise
+        except Exception as exc:
+            audit_tool_call(
+                tool_name=tool_name,
+                user_id=request.user_id,
+                conversation_id=request.conversation_id,
+                question=request.message,
+                ok=False,
+                content=_friendly_stream_error(exc),
+                elapsed_ms=int((perf_counter() - started) * 1000),
+            )
+            logger.exception(
+                "Streaming image batch failed. user_id=%s conversation_id=%s turn_id=%s",
+                request.user_id,
+                request.conversation_id,
+                turn_id,
+            )
+            yield _sse("turn.status", {
+                "turnId": turn_id,
+                "phase": "FAILED",
+                "message": "图片任务执行失败",
+            })
+            yield _sse("error", {"message": _friendly_stream_error(exc), "turnId": turn_id})
+
+    def write_memory_after_stream() -> None:
+        answer = final_answer_holder.get("answer")
+        if answer:
+            write_memory_in_background(
+                request.user_id,
+                request.conversation_id,
+                request.message,
+                answer,
+                request.ai_config,
+                True,
+            )
 
     return StreamingResponse(
         generate(),

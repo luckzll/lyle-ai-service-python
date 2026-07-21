@@ -12,6 +12,7 @@ from app.memory.store import export_memory
 from app.rag.reranker import get_reranker_status
 from app.tools.risk_policy import ToolRiskPolicy, get_tool_risk_policy
 from app.tools.file_parse_tool import parse_file_from_question
+from app.tools.image_intent import is_image_generation_request
 from app.tools.image_tool import analyze_image_from_question, edit_image_from_question, generate_image_from_question
 from app.tools.task_tool import preview_calendar_event_from_question, preview_todo_from_question
 from app.tools.tool_audit import audit_tool_call
@@ -137,7 +138,12 @@ def select_tools(question: str) -> list[str]:
         "data:image/" in lowered
         or bool(re.search(r"https?://\S+\.(?:png|jpe?g|webp|gif)", question, re.IGNORECASE))
     )
-    if has_image_ref and any(keyword in question for keyword in image_edit_keywords):
+    reference_generation = (
+        has_image_ref
+        and any(keyword in question for keyword in ["参考", "基于", "结合", "按照这些图", "用这些图"])
+        and is_image_generation_request(question)
+    )
+    if has_image_ref and (any(keyword in question for keyword in image_edit_keywords) or reference_generation):
         selected.append("image_edit")
     elif (
         any(keyword in question for keyword in ["识别图片", "看图", "这张图", "图片里", "图里", "分析图片", "图片识别"])
@@ -145,40 +151,7 @@ def select_tools(question: str) -> list[str]:
         or "data:image/" in lowered
     ):
         selected.append("image_analyze")
-    image_generate_keywords = [
-        "生成图片",
-        "生图",
-        "画一张",
-        "画一个",
-        "帮我画",
-        "生成一张",
-        "文生图",
-        "再生成",
-        "再来一张",
-    ]
-    image_subject_keywords = [
-        "图片",
-        "图",
-        "照片",
-        "海报",
-        "头像",
-        "壁纸",
-        "猫",
-        "狗",
-        "小猫",
-        "小狗",
-        "小狗狗",
-        "赛博朋克",
-        "风格",
-    ]
-    if (
-        any(keyword in question for keyword in image_generate_keywords)
-        or "generate image" in lowered
-        or (
-            any(keyword in question for keyword in ["再来", "换", "改"])
-            and any(keyword in question for keyword in image_subject_keywords)
-        )
-    ):
+    if is_image_generation_request(question):
         if "image_edit" not in selected:
             selected.append("image_generate")
     if any(keyword in question for keyword in ["创建待办", "加个待办", "待办"]) or "todo" in lowered:

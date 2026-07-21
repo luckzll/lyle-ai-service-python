@@ -6,17 +6,21 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, Iterator
 
 import httpx
 
 from app.core.config import settings
+from app.tools.image_intent import is_image_generation_request
 
 
 def analyze_image_from_question(question: str) -> dict[str, object]:
-    image_ref = _extract_image_ref(question)
-    if not image_ref:
+    image_refs = extract_image_refs(question)
+    if not image_refs:
         return {
             "ok": False,
             "content": "没有收到可识别的图片。请先上传图片后再提问。",
@@ -24,16 +28,19 @@ def analyze_image_from_question(question: str) -> dict[str, object]:
     if not _image_api_key():
         return {"ok": False, "content": "图片识别模型 API Key 未配置。"}
 
-    image_url = _to_image_url(image_ref)
-    prompt = _clean_analyze_prompt(question, image_ref)
+    image_urls = [_to_image_url(value) for value in image_refs]
+    prompt = _clean_analyze_prompt(question, image_refs)
     payload = {
         "model": settings.vision_model_name,
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": prompt or "请描述这张图片的内容。"},
-                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": prompt or "请综合描述这些图片的内容、共同点和差异。"},
+                    *[
+                        {"type": "image_url", "image_url": {"url": image_url}}
+                        for image_url in image_urls
+                    ],
                 ],
             }
         ],
@@ -43,7 +50,8 @@ def analyze_image_from_question(question: str) -> dict[str, object]:
     return {
         "ok": bool(content),
         "content": content or "图片识别没有返回内容。",
-        "imageRef": image_ref,
+        "imageRef": image_refs[0],
+        "imageRefs": image_refs,
         "model": settings.vision_model_name,
     }
 
@@ -51,94 +59,173 @@ def analyze_image_from_question(question: str) -> dict[str, object]:
 def generate_image_from_question(question: str) -> dict[str, object]:
     if not _image_api_key():
         return {"ok": False, "content": "生图模型 API Key 未配置。"}
-
-    prompt = _clean_generate_prompt(question)
-    payload = {
-        "model": settings.image_model_name,
-        "prompt": prompt,
-        "size": "2048x2048",
-        "response_format": "b64_json",
-        "watermark": settings.image_watermark,
-    }
-    data = _post_json("/images/generations", payload, timeout=120)
-    images = _extract_generated_images(data)
-    if not images:
-        return {
-            "ok": False,
-            "content": "生图模型没有返回图片。",
-            "raw": data,
-            "model": settings.image_model_name,
-        }
-    first = images[0]
-    url = first.get("url") or ""
-    b64 = first.get("b64_json") or ""
-    image_src, storage_used, storage_error = _publish_generated_image_result(b64, url)
-    content = "图片已生成。"
-    if url:
-        content += f"\n\n原图链接：{url}"
-    if storage_error:
-        content += f"\n\n图片上传 TOS 失败，已回退到本地存储：{storage_error}"
-    if image_src:
-        content += f"\n\n![生成图片]({image_src})"
-    return {
-        "ok": True,
-        "content": content,
-        "prompt": prompt,
-        "images": images,
-        "model": settings.image_model_name,
-        "imageUrl": image_src,
-        "storageRequested": settings.generated_image_storage,
-        "storageUsed": storage_used,
-        "storageError": storage_error,
-    }
+    spec = build_image_batch_spec(question, "generate")
+    return build_image_batch_result(spec, list(iter_image_batch_results(spec)))
 
 
 def edit_image_from_question(question: str) -> dict[str, object]:
     if not _image_api_key():
         return {"ok": False, "content": "图片编辑模型 API Key 未配置。"}
 
-    image_ref = _extract_image_ref(question)
-    if not image_ref:
+    image_refs = extract_image_refs(question)
+    if not image_refs:
         return {"ok": False, "content": "没有收到要修改的图片。请先上传图片，并说明想怎么改。"}
+    spec = build_image_batch_spec(question, "edit")
+    return build_image_batch_result(spec, list(iter_image_batch_results(spec)))
 
-    image_url = _to_image_url(image_ref)
-    prompt = _clean_edit_prompt(question, image_ref)
-    payload = {
+
+def build_image_batch_spec(question: str, mode: str) -> dict[str, Any]:
+    normalized_mode = "edit" if mode == "edit" else "generate"
+    refs = extract_image_refs(question)
+    max_count = max(1, min(int(settings.image_batch_max_count), 16))
+    count = parse_image_count(question, max_count=max_count)
+    prompt = (
+        _clean_edit_prompt(question, refs)
+        if normalized_mode == "edit"
+        else _clean_generate_prompt(question)
+    )
+    return {
+        "batchId": uuid.uuid4().hex,
+        "mode": normalized_mode,
+        "prompt": prompt,
+        "count": count,
+        "referenceImageRefs": refs,
+        "referenceImageUrls": [_to_image_url(value) for value in refs],
+        "model": settings.image_model_name,
+        "size": "2048x2048",
+    }
+
+
+def iter_image_batch_results(spec: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    count = max(1, int(spec.get("count") or 1))
+    concurrency = max(1, min(int(settings.image_batch_concurrency), count, 32))
+    executor = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="image-batch")
+    futures: dict[Future[dict[str, Any]], int] = {
+        executor.submit(_execute_image_item, spec, index): index
+        for index in range(count)
+    }
+    try:
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                yield future.result()
+            except Exception as exc:
+                yield {
+                    "index": index,
+                    "status": "FAILED",
+                    "error": _safe_error(exc),
+                }
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+def build_image_batch_result(
+    spec: dict[str, Any],
+    items: list[dict[str, Any]],
+) -> dict[str, object]:
+    ordered = sorted(items, key=lambda item: int(item.get("index") or 0))
+    completed = [item for item in ordered if item.get("status") == "COMPLETED" and item.get("imageUrl")]
+    failed = [item for item in ordered if item.get("status") != "COMPLETED"]
+    mode = str(spec.get("mode") or "generate")
+    action = "修改" if mode == "edit" else "生成"
+    refs = list(spec.get("referenceImageRefs") or [])
+    if not completed:
+        return {
+            "ok": False,
+            "content": f"图片{action}失败，没有获得可用图片。",
+            "prompt": spec.get("prompt"),
+            "images": ordered,
+            "imageUrls": [],
+            "model": settings.image_model_name,
+            "batchId": spec.get("batchId"),
+            "batchStatus": "FAILED",
+            "requestedCount": spec.get("count"),
+            "completedCount": 0,
+            "failedCount": len(failed),
+            "sourceImageRef": refs[0] if refs else None,
+            "sourceImageRefs": refs,
+        }
+
+    image_urls = [str(item["imageUrl"]) for item in completed]
+    summary = f"已{action} {len(completed)} 张图片"
+    if failed:
+        summary += f"，另有 {len(failed)} 张失败"
+    content = summary + "。"
+    base_alt = "修改后图片" if mode == "edit" else "生成图片"
+    content += "".join(
+        f"\n\n![{base_alt if len(image_urls) == 1 else f'{base_alt} {index + 1}'}]({url})"
+        for index, url in enumerate(image_urls)
+    )
+    storage_errors = [
+        str(item.get("storageError") or "")
+        for item in completed
+        if str(item.get("storageError") or "")
+    ]
+    return {
+        "ok": True,
+        "partial": bool(failed),
+        "content": content,
+        "prompt": spec.get("prompt"),
+        "images": ordered,
+        "imageUrl": image_urls[0],
+        "imageUrls": image_urls,
+        "model": settings.image_model_name,
+        "batchId": spec.get("batchId"),
+        "batchStatus": "PARTIALLY_COMPLETED" if failed else "COMPLETED",
+        "requestedCount": spec.get("count"),
+        "completedCount": len(completed),
+        "failedCount": len(failed),
+        "sourceImageRef": refs[0] if refs else None,
+        "sourceImageRefs": refs,
+        "storageRequested": settings.generated_image_storage,
+        "storageUsed": completed[0].get("storageUsed"),
+        "storageError": "；".join(storage_errors),
+    }
+
+
+def _execute_image_item(spec: dict[str, Any], index: int) -> dict[str, Any]:
+    prompt = str(spec.get("prompt") or "")
+    if int(spec.get("count") or 1) > 1:
+        prompt += (
+            f"\n这是同一批次中的第 {index + 1} 张，请保持核心要求一致，"
+            "同时让构图与细节具有独立变化。"
+        )
+    payload: dict[str, object] = {
         "model": settings.image_model_name,
         "prompt": prompt,
-        "size": "2048x2048",
+        "size": str(spec.get("size") or "2048x2048"),
         "response_format": "b64_json",
         "watermark": settings.image_watermark,
     }
-    data = _post_image_edit_json(payload, image_url)
+    max_attempts = max(1, min(int(settings.image_batch_retry_attempts) + 1, 4))
+    data: dict[str, object] = {}
+    for attempt in range(max_attempts):
+        try:
+            if spec.get("mode") == "edit":
+                data = _post_image_edit_json(payload, list(spec.get("referenceImageUrls") or []))
+            else:
+                data = _post_json("/images/generations", payload, timeout=120)
+            break
+        except Exception as exc:
+            if attempt + 1 >= max_attempts or not _is_retryable_image_error(exc):
+                raise
+            delay = max(0.0, float(settings.image_batch_retry_base_seconds)) * (2**attempt)
+            time.sleep(delay)
     images = _extract_generated_images(data)
     if not images:
-        return {
-            "ok": False,
-            "content": "图片编辑模型没有返回图片。",
-            "raw": data,
-            "model": settings.image_model_name,
-            "sourceImageRef": image_ref,
-        }
-
+        raise RuntimeError("生图模型没有返回图片。")
     first = images[0]
-    url = first.get("url") or ""
+    remote_url = first.get("url") or ""
     b64 = first.get("b64_json") or ""
-    image_src, storage_used, storage_error = _publish_generated_image_result(b64, url)
-    content = "图片已修改。"
-    if storage_error:
-        content += f"\n\n图片上传 TOS 失败，已回退到本地存储：{storage_error}"
-    if image_src:
-        content += f"\n\n![修改后图片]({image_src})"
+    image_src, storage_used, storage_error = _publish_generated_image_result(b64, remote_url)
+    if not image_src:
+        raise RuntimeError("图片生成成功，但结果无法持久化。")
     return {
-        "ok": True,
-        "content": content,
-        "prompt": prompt,
-        "images": images,
-        "model": settings.image_model_name,
+        "index": index,
+        "status": "COMPLETED",
         "imageUrl": image_src,
-        "sourceImageRef": image_ref,
-        "storageRequested": settings.generated_image_storage,
+        "remoteUrl": remote_url,
+        "revisedPrompt": first.get("revisedPrompt") or "",
         "storageUsed": storage_used,
         "storageError": storage_error,
     }
@@ -164,12 +251,14 @@ def _post_json(path: str, payload: dict[str, object], timeout: float | None = No
     return data if isinstance(data, dict) else {}
 
 
-def _post_image_edit_json(payload: dict[str, object], image_url: str) -> dict[str, object]:
+def _post_image_edit_json(payload: dict[str, object], image_urls: list[str]) -> dict[str, object]:
+    if not image_urls:
+        raise RuntimeError("图片编辑至少需要一张参考图。")
     candidates = [
-        {"image": [image_url]},
-        {"image_urls": [image_url]},
-        {"image_input": [image_url]},
-        {"images": [image_url]},
+        {"image": image_urls},
+        {"image_urls": image_urls},
+        {"image_input": image_urls},
+        {"images": image_urls},
     ]
     last_error = ""
     for candidate in candidates:
@@ -351,17 +440,73 @@ def _decode_base64_image(b64: str) -> bytes:
     return base64.b64decode(b64)
 
 
+def extract_image_refs(question: str) -> list[str]:
+    values: list[str] = []
+    for match in re.finditer(
+        r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+",
+        question,
+    ):
+        values.append(match.group(0))
+    for match in re.finditer(
+        r"https?://[^\s，。!！)）]+\.(?:png|jpe?g|webp|gif)(?:\?[^\s，。!！)）]*)?",
+        question,
+        re.IGNORECASE,
+    ):
+        values.append(match.group(0).rstrip("，。,.!！)）"))
+    for match in re.finditer(
+        r"(?<![A-Za-z0-9:])(/[^\s，。,.!！?？]+\.(?:png|jpe?g|webp|gif))",
+        question,
+        re.IGNORECASE,
+    ):
+        values.append(match.group(1))
+    deduplicated: list[str] = []
+    for value in values:
+        if value not in deduplicated:
+            deduplicated.append(value)
+    max_refs = max(1, min(int(settings.image_reference_max_count), 16))
+    return deduplicated[:max_refs]
+
+
 def _extract_image_ref(question: str) -> str:
-    data_url_match = re.search(r"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+", question)
-    if data_url_match:
-        return re.sub(r"\s+", "", data_url_match.group(0))
-    url_match = re.search(r"https?://\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?", question, re.IGNORECASE)
-    if url_match:
-        return url_match.group(0).rstrip("，。,.!！)")
-    path_match = re.search(r"(/[^\s，。,.!！?？]+\.(?:png|jpe?g|webp|gif))", question, re.IGNORECASE)
-    if path_match:
-        return path_match.group(1)
-    return ""
+    refs = extract_image_refs(question)
+    return refs[0] if refs else ""
+
+
+def parse_image_count(question: str, max_count: int | None = None) -> int:
+    upper = max(1, max_count or int(settings.image_batch_max_count))
+    number_token = r"(\d{1,2}|[一两二三四五六七八九十])"
+    requested = re.search(
+        rf"(?:生成|生图|画|输出|制作|做)(?:[^，。,\n]{{0,12}}?){number_token}\s*张",
+        question,
+    )
+    if requested:
+        return max(1, min(_parse_image_count_token(requested.group(1)), upper))
+    all_counts = re.findall(rf"{number_token}\s*张", question)
+    if all_counts:
+        return max(1, min(_parse_image_count_token(all_counts[-1]), upper))
+    if (
+        is_image_generation_request(question)
+        and any(value in question for value in ["批量生图", "批量生成", "多张图片", "多张图"])
+    ):
+        return min(4, upper)
+    return 1
+
+
+def _parse_image_count_token(value: str) -> int:
+    chinese_numbers = {
+        "一": 1,
+        "两": 2,
+        "二": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+    }
+    return int(value) if value.isdigit() else chinese_numbers.get(value, 1)
 
 
 def _to_image_url(image_ref: str) -> str:
@@ -373,12 +518,21 @@ def _to_image_url(image_ref: str) -> str:
     return f"data:{mime};base64,{payload}"
 
 
-def _clean_analyze_prompt(question: str, image_ref: str) -> str:
-    return question.replace(image_ref, "").strip(" ：:，。")
+def _clean_analyze_prompt(question: str, image_refs: list[str]) -> str:
+    cleaned = question
+    for image_ref in image_refs:
+        cleaned = cleaned.replace(image_ref, "")
+    return re.sub(r"图片\s*\d*\s*[：:]\s*", "", cleaned).strip(" ：:，。\n")
 
 
 def _clean_generate_prompt(question: str) -> str:
     cleaned = question.strip()
+    cleaned = re.sub(
+        r"^(?:请|帮我|给我)?\s*(?:生成|生图|画|输出|制作|做)\s*"
+        r"(?:\d{1,2}|[一两二三四五六七八九十])\s*张\s*",
+        "",
+        cleaned,
+    )
     prefixes = [
         "帮我生成一张",
         "生成一张",
@@ -397,9 +551,17 @@ def _clean_generate_prompt(question: str) -> str:
     return cleaned or question.strip()
 
 
-def _clean_edit_prompt(question: str, image_ref: str) -> str:
-    cleaned = question.replace(image_ref, "")
-    cleaned = re.sub(r"图片\s*[：:]\s*", "", cleaned)
+def _clean_edit_prompt(question: str, image_refs: list[str]) -> str:
+    cleaned = question
+    for image_ref in image_refs:
+        cleaned = cleaned.replace(image_ref, "")
+    cleaned = re.sub(r"图片\s*\d*\s*[：:]\s*", "", cleaned)
+    cleaned = re.sub(
+        r"(?:生成|生图|输出|制作|做)\s*"
+        r"(?:\d{1,2}|[一两二三四五六七八九十])\s*张\s*",
+        "",
+        cleaned,
+    )
     cleaned = cleaned.strip(" ：:，。\n")
     prefixes = [
         "帮我改一下",
@@ -418,6 +580,17 @@ def _clean_edit_prompt(question: str, image_ref: str) -> str:
             cleaned = cleaned[len(prefix):].strip(" ：:，。")
             break
     return cleaned or "请根据用户要求编辑这张图片。"
+
+
+def _safe_error(exc: Exception) -> str:
+    value = re.sub(r"(?i)(api[_ -]?key|authorization|token)\s*[:=]\s*\S+", r"\1=[REDACTED]", str(exc))
+    return value[:1000] or exc.__class__.__name__
+
+
+def _is_retryable_image_error(exc: Exception) -> bool:
+    if isinstance(exc, httpx.RequestError):
+        return True
+    return bool(re.search(r"HTTP\s+(?:408|429|5\d\d)\b", str(exc), re.IGNORECASE))
 
 
 def _image_api_key() -> str:
