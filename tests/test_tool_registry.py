@@ -23,6 +23,7 @@ def test_select_tools_detects_memory_stats_and_web_search():
     assert "web_search" not in select_tools("今天上海天气怎么样")
     assert "file_parse" in select_tools("解析文件 file:///tmp/a.txt")
     assert "image_analyze" in select_tools("帮我看图 https://example.com/a.png 里面有什么")
+    assert "image_analyze" in select_tools("请确认收到验收图片\n图片1：/tmp/v62-acceptance.png")
     assert "image_generate" in select_tools("帮我生成一张赛博朋克猫")
     assert "image_edit" in select_tools("把这张图背景换成雪山 图片：https://example.com/a.png")
     assert "image_edit" in select_tools(
@@ -127,6 +128,7 @@ def test_plain_dislike_with_image_ref_does_not_trigger_image_edit():
     selected = select_tools("我不喜欢帽子\n图片：https://example.com/source.png")
 
     assert "image_edit" not in selected
+    assert "image_analyze" in selected
 
 
 def test_execute_tool_respects_allowed_tool_names(monkeypatch):

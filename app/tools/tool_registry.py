@@ -13,7 +13,7 @@ from app.rag.reranker import get_reranker_status
 from app.tools.risk_policy import ToolRiskPolicy, get_tool_risk_policy
 from app.tools.file_parse_tool import parse_file_from_question
 from app.tools.image_intent import is_image_generation_request
-from app.tools.image_tool import analyze_image_from_question, edit_image_from_question, generate_image_from_question
+from app.tools.image_tool import analyze_image_from_question, edit_image_from_question, extract_image_refs, generate_image_from_question
 from app.tools.task_tool import preview_calendar_event_from_question, preview_todo_from_question
 from app.tools.tool_audit import audit_tool_call
 from app.tools.weather_tool import get_weather_from_question
@@ -134,10 +134,7 @@ def select_tools(question: str) -> list[str]:
         "把这张图",
         "把图片",
     ]
-    has_image_ref = (
-        "data:image/" in lowered
-        or bool(re.search(r"https?://\S+\.(?:png|jpe?g|webp|gif)", question, re.IGNORECASE))
-    )
+    has_image_ref = bool(extract_image_refs(question))
     reference_generation = (
         has_image_ref
         and any(keyword in question for keyword in ["参考", "基于", "结合", "按照这些图", "用这些图"])
@@ -148,7 +145,7 @@ def select_tools(question: str) -> list[str]:
     elif (
         any(keyword in question for keyword in ["识别图片", "看图", "这张图", "图片里", "图里", "分析图片", "图片识别"])
         or "image analyze" in lowered
-        or "data:image/" in lowered
+        or has_image_ref
     ):
         selected.append("image_analyze")
     if is_image_generation_request(question):

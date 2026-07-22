@@ -71,6 +71,12 @@ def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
     return title, f"文件 {title} 已上传，但当前暂不支持 {suffix or '未知'} 格式解析。"
 
 
+def resolve_storage_path(storage_path: str | StorageObjectRef) -> Path:
+    """Resolve a trusted server-side storage reference for turn-scoped attachment use."""
+    ref = storage_path if isinstance(storage_path, StorageObjectRef) else StorageObjectRef(storage_path=storage_path)
+    return _resolve_storage_path(ref)
+
+
 def split_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str]:
     return [item.text for item in split_text_with_metadata(text, chunk_size, overlap)]
 

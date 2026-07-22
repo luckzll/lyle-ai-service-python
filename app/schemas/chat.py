@@ -1,6 +1,25 @@
 from pydantic import BaseModel, Field
 
 
+class ChatAttachmentStorage(BaseModel):
+    storagePath: str
+    storageProvider: str | None = None
+    bucket: str | None = None
+    objectKey: str | None = None
+    originalName: str | None = None
+    contentType: str | None = None
+    fileSize: int | None = None
+
+
+class ChatAttachment(BaseModel):
+    id: str
+    kind: str
+    name: str
+    mimeType: str
+    size: int
+    storage: ChatAttachmentStorage
+
+
 class ChatRequest(BaseModel):
     # FastAPI/Pydantic 当前组合会在请求模型字段使用 alias 时产生错误告警；
     # 直接保持 HTTP camelCase 契约，并用只读属性供内部 Python 代码使用。
@@ -12,6 +31,7 @@ class ChatRequest(BaseModel):
     knowledgeBaseIds: list[str] = Field(default_factory=list)
     stream: bool = False
     aiConfig: dict[str, str] = Field(default_factory=dict)
+    attachments: list[ChatAttachment] = Field(default_factory=list)
 
     @property
     def user_id(self) -> str:

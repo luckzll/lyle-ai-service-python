@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     image_batch_retry_attempts: int = 2
     image_batch_retry_base_seconds: float = 0.6
     image_reference_max_count: int = 8
+    chat_attachment_max_count: int = 8
+    chat_attachment_max_file_bytes: int = 5 * 1024 * 1024
+    chat_attachment_max_total_bytes: int = 20 * 1024 * 1024
+    chat_attachment_text_max_chars_per_file: int = 50000
+    chat_attachment_text_max_chars_total: int = 120000
     # V3 轻量连接器：本地文档只允许读取白名单目录；GitHub 先支持只读能力。
     connector_local_docs_roots: str = "../.."
     connector_local_docs_max_files: int = 200

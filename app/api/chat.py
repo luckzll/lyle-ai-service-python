@@ -12,7 +12,8 @@ from app.core.runtime_config import temporary_ai_config
 from app.core.config import settings
 from app.agents.reviewer_agent import run_reviewer_agent
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
-from app.llm.client import stream_answer
+from app.llm.client import generate_answer, stream_answer
+from app.chat_attachments import build_turn_attachment_context, message_with_image_attachments
 from app.memory.store import extract_structured_memory, remember_interaction
 from app.memory.overview import build_memory_overview_answer
 from app.plans.plan_builder import build_plan_candidate
@@ -72,12 +73,14 @@ def write_memory_in_background(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
+    effective_message = message_with_image_attachments(request)
+    attachment_context, attachment_results = build_turn_attachment_context(request)
     try:
         with temporary_ai_config(request.ai_config):
             result = run_multi_agent_graph(
                 request.user_id,
                 request.conversation_id,
-                request.message,
+                effective_message,
                 request.knowledge_base_ids,
             )
     except Exception as exc:
@@ -85,8 +88,29 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         raise HTTPException(status_code=502, detail=f"LangGraph 调用失败：{exc}") from exc
 
     contexts = result.get("contexts") or []
-    tool_results = result.get("tool_results") or []
-    answer = _image_generate_answer(request.message, tool_results)
+    tool_results = list(result.get("tool_results") or [])
+    tool_results.extend({"tool": "chat_attachment_parse", **item} for item in attachment_results)
+    answer = _image_generate_answer(effective_message, tool_results)
+    image_analysis = next(
+        (str(item.get("content") or "") for item in tool_results if item.get("tool") == "image_analyze" and item.get("ok")),
+        "",
+    )
+    if attachment_context and image_analysis:
+        answer, _ = generate_answer(
+            request.message,
+            contexts,
+            "\n\n".join(item for item in [
+                str(result.get("memory_context") or ""),
+                attachment_context,
+                f"<image-analysis>\n{image_analysis}\n</image-analysis>",
+            ] if item),
+        )
+    elif attachment_context and answer is None:
+        answer, _ = generate_answer(
+            request.message,
+            contexts,
+            "\n\n".join(item for item in [str(result.get("memory_context") or ""), attachment_context] if item),
+        )
     if answer is None:
         answer = _append_tool_artifacts(
             _strip_unbacked_image_markdown(result.get("answer") or "", tool_results),
@@ -160,9 +184,11 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
 
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
-    image_tool = _stream_image_tool(request.message)
+    attachment_context, attachment_results = build_turn_attachment_context(request)
+    effective_image_message = message_with_image_attachments(request)
+    image_tool = _stream_image_tool(effective_image_message)
     if image_tool:
-        return _image_chat_stream(request, image_tool)
+        return _image_chat_stream(request, image_tool, attachment_context, attachment_results)
 
     request_started = perf_counter()
     logger.info(
@@ -195,7 +221,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     candidate_plans = [plan_candidate] if plan_candidate else []
     memory_context = str(state.get("memory_context") or "")
     tool_context = str(state.get("tool_context") or "")
-    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), list) else []
+    tool_results = list(state.get("tool_results")) if isinstance(state.get("tool_results"), list) else []
+    tool_results.extend({"tool": "chat_attachment_parse", **item} for item in attachment_results)
+    state["tool_results"] = tool_results
     has_work_summary_tool = _has_successful_tool(tool_results, "work_summary")
     effective_memory_context = "" if has_work_summary_tool else memory_context
     confirmation_guidance = _v3_confirmation_guidance(
@@ -207,6 +235,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         item for item in [
             effective_memory_context,
             tool_context,
+            attachment_context,
             confirmation_guidance,
         ] if item
     )
@@ -509,8 +538,20 @@ def _stream_image_tool(message: str) -> str | None:
     return None
 
 
-def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingResponse:
+def _image_chat_stream(
+    request: ChatRequest,
+    tool_name: str,
+    attachment_context: str = "",
+    attachment_results: list[dict[str, object]] | None = None,
+) -> StreamingResponse:
     turn_id = request.turn_id or uuid.uuid4().hex
+    image_message = "\n\n".join(
+        item for item in [message_with_image_attachments(request), attachment_context] if item
+    )
+    attachment_tool_results = [
+        {"tool": "chat_attachment_parse", **item}
+        for item in (attachment_results or [])
+    ]
     final_answer_holder: dict[str, str] = {}
 
     def generate():
@@ -523,13 +564,13 @@ def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingRespons
         try:
             with temporary_ai_config(request.ai_config):
                 if tool_name == "image_analyze":
-                    refs = extract_image_refs(request.message)
+                    refs = extract_image_refs(image_message)
                     yield _sse("turn.status", {
                         "turnId": turn_id,
                         "phase": "ANALYZING",
                         "message": f"正在分析 {len(refs)} 张图片…",
                     })
-                    result = analyze_image_from_question(request.message)
+                    result = analyze_image_from_question(image_message)
                     answer = str(result.get("content") or "图片分析没有返回结果。")
                     elapsed_ms = int((perf_counter() - started) * 1000)
                     tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
@@ -551,7 +592,7 @@ def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingRespons
                             "imageCount": len(refs),
                             "streaming": True,
                         }],
-                        "toolResults": [tool_result],
+                        "toolResults": [*attachment_tool_results, tool_result],
                         "review": {"approved": bool(result.get("ok")), "reason": "image analysis"},
                     })
                     final_answer_holder["answer"] = answer
@@ -564,7 +605,7 @@ def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingRespons
                     return
 
                 mode = "edit" if tool_name == "image_edit" else "generate"
-                spec = build_image_batch_spec(request.message, mode)
+                spec = build_image_batch_spec(image_message, mode)
                 batch_id = str(spec["batchId"])
                 count = int(spec["count"])
                 concurrency = max(1, min(count, int(settings.image_batch_concurrency), 32))
@@ -655,7 +696,7 @@ def _image_chat_stream(request: ChatRequest, tool_name: str) -> StreamingRespons
                         "elapsedMillis": elapsed_ms,
                         "streaming": True,
                     }],
-                    "toolResults": [tool_result],
+                    "toolResults": [*attachment_tool_results, tool_result],
                     "review": {
                         "approved": bool(result.get("ok")),
                         "reason": str(result.get("batchStatus") or "image batch"),
