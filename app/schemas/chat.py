@@ -17,6 +17,10 @@ class ChatAttachment(BaseModel):
     name: str
     mimeType: str
     size: int
+    sourceType: str | None = None
+    folderGroupId: str | None = None
+    folderRoot: str | None = None
+    relativePath: str | None = None
     storage: ChatAttachmentStorage
 
 

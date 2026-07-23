@@ -7,7 +7,7 @@ from app.experience.confirmation_inbox import confirm, get_confirmation, list_co
 from app.experience.connection_diagnostics import connection_diagnostics, diagnose_connection, recommended_connections
 from app.experience.draft_service import create_from_intent, create_from_template, discard_draft, enable_draft, get_draft
 from app.experience.onboarding_store import get_onboarding, run_first_inspection, update_onboarding
-from app.experience.result_summary_service import get_result, list_results, needs_attention
+from app.experience.result_summary_service import dismiss_result, get_result, list_results, needs_attention, restore_result
 from app.experience.template_catalog import get_template, list_templates
 from app.experience.analytics import experience_analytics
 from app.experience.events import EFFECTIVE_PROGRESS_ACTIONS, EVENT_TYPES, record_event
@@ -19,7 +19,7 @@ router = APIRouter()
 ProductPage = Literal[
     "dashboard", "chat", "tasks", "projects", "automations", "execution-center",
     "connections", "knowledge-bases", "conversations", "memory", "advanced-settings",
-    "settings", "evaluation", "prompts", "admin",
+    "settings", "evaluation", "prompts", "admin", "login",
 ]
 ProductAction = Literal[
     "freeform", "organize-project", "make-plan", "research", "inspect", "start_chat",
@@ -30,6 +30,11 @@ ProductAction = Literal[
     "view_results", "view_history",
     "task_complete", "task_reschedule", "confirmation", "automation_enable",
     "automation_run", "result_action", "project_chat",
+    "login", "register", "redirect", "show", "hide", "drop", "cancel",
+    "picker", "paste", "folder_picker", "folder_drop",
+    "hidden", "system", "unsupported", "depth", "scan_limit", "timeout",
+    "read_error", "count", "size", "total_size",
+    "with_folder", "without_folder",
 ]
 ProductStatus = Literal[
     "draft", "enabled", "disabled", "paused", "running", "completed", "partial",
@@ -56,6 +61,7 @@ class ProductEventRequest(BaseModel):
     status: ProductStatus | None = None
     durationMs: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
     errorCategory: ProductErrorCategory | None = None
+    itemCount: int | None = Field(default=None, ge=0, le=50_000)
 
     @field_validator("eventType")
     @classmethod
@@ -111,6 +117,7 @@ def product_event(user_id: str, request: ProductEventRequest) -> dict[str, bool]
             "actionType": request.actionType,
             "projectId": request.projectId,
             "errorCategory": request.errorCategory,
+            "itemCount": request.itemCount,
         },
     )
     return {"accepted": True}
@@ -167,6 +174,7 @@ def results(
     status: str | None = None,
     projectId: int | None = None,
     automationId: int | None = Query(default=None, gt=0),
+    attentionOnly: bool = False,
     cursor: str | None = Query(default=None, max_length=256),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict[str, Any]:
@@ -177,12 +185,23 @@ def results(
         limit,
         cursor=cursor,
         automation_id=automationId,
+        attention_only=attentionOnly,
     )
 
 
 @router.get("/experience/execution/{user_id}/results/{result_id}")
 def result(user_id: str, result_id: int) -> dict[str, Any]:
     return get_result(user_id, result_id)
+
+
+@router.post("/experience/execution/{user_id}/results/{result_id}/dismiss")
+def result_dismiss(user_id: str, result_id: int) -> dict[str, Any]:
+    return dismiss_result(user_id, result_id)
+
+
+@router.post("/experience/execution/{user_id}/results/{result_id}/restore")
+def result_restore(user_id: str, result_id: int) -> dict[str, Any]:
+    return restore_result(user_id, result_id)
 
 
 @router.get("/experience/execution/{user_id}/needs-attention")

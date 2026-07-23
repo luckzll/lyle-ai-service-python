@@ -30,8 +30,12 @@ EVENT_TYPES = {
     "automation_failed", "retry_started", "connection_diagnostic_started",
     "dashboard_viewed", "dashboard_action_clicked", "quick_intent_submitted",
     "navigation_group_opened", "context_panel_opened", "automation_card_actioned",
-    "execution_filter_applied", "result_source_opened", "confirmation_completed",
+    "execution_filter_applied", "result_source_opened", "result_dismissed", "confirmation_completed",
     "mobile_primary_action_used", "ui_error_recovered", "effective_progress_action",
+    "auth_view_total", "auth_submit_total", "auth_return_to_target_total",
+    "chat_drag_overlay_total", "chat_attachment_added_total", "chat_folder_scan_total",
+    "chat_folder_skip_total",
+    "chat_turn_submitted_total",
 }
 
 
@@ -60,7 +64,7 @@ def record_event(
         key: value for key, value in (metadata or {}).items()
         if key in {
             "source", "action", "actionType", "page", "projectId", "entityId",
-            "errorCategory", "projectSelected", "workspaceSelected"
+            "errorCategory", "projectSelected", "workspaceSelected", "itemCount"
         }
         and isinstance(value, (str, int, bool, type(None)))
     }

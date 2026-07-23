@@ -70,6 +70,7 @@ def test_effective_progress_event_rejects_metric_poisoning_and_drops_text(monkey
         "actionType": "project_chat",
         "projectId": 7,
         "errorCategory": None,
+        "itemCount": None,
     }
 
 

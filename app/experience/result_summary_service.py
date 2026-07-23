@@ -19,7 +19,7 @@ RESULT_SELECT = """
     result.template_id, result.status, result.title, result.conclusion,
     result.completed_items_json, result.risks_json, result.recommended_actions_json,
     result.data_scope_json, result.duration_ms, result.trace_ref,
-    automation_run.automation_id, automation.name, result.created_at
+    automation_run.automation_id, automation.name, result.dismissed_at, result.created_at
   FROM execution_result_summary result
   LEFT JOIN LATERAL (
     SELECT run.automation_id
@@ -87,7 +87,8 @@ def ensure_workflow_summary(user_id: str, run_id: int) -> dict[str, Any]:
                  risks_json=EXCLUDED.risks_json,
                  recommended_actions_json=EXCLUDED.recommended_actions_json,
                  data_scope_json=EXCLUDED.data_scope_json,
-                 duration_ms=EXCLUDED.duration_ms, trace_ref=EXCLUDED.trace_ref
+                 duration_ms=EXCLUDED.duration_ms, trace_ref=EXCLUDED.trace_ref,
+                 dismissed_at=NULL
                RETURNING id""",
             (user_id, str(run_id), run.get("projectId"), (run.get("input") or {}).get("templateId"), status, title, conclusion,
              json.dumps(completed, ensure_ascii=False), json.dumps(risks, ensure_ascii=False),
@@ -120,7 +121,8 @@ def ensure_automation_failure_summary(
                  project_id = COALESCE(EXCLUDED.project_id, execution_result_summary.project_id),
                  risks_json = EXCLUDED.risks_json,
                  recommended_actions_json = EXCLUDED.recommended_actions_json,
-                 trace_ref = EXCLUDED.trace_ref
+                 trace_ref = EXCLUDED.trace_ref,
+                 dismissed_at = NULL
                RETURNING id""",
             (
                 user_id,
@@ -148,6 +150,7 @@ def list_results(
     *,
     cursor: str | None = None,
     automation_id: int | None = None,
+    attention_only: bool = False,
 ) -> dict[str, Any]:
     _ensure()
     with postgres_connection() as conn:
@@ -183,6 +186,9 @@ def list_results(
         clauses.append("result.project_id=%s"); params.append(project_id)
     if automation_id is not None:
         clauses.append("automation_run.automation_id=%s"); params.append(automation_id)
+    if attention_only:
+        clauses.append("result.dismissed_at IS NULL")
+        clauses.append("result.status IN ('failed', 'partial', 'awaiting_confirmation')")
     if cursor:
         cursor_created_at, cursor_id = _decode_cursor(cursor)
         clauses.append("(result.created_at, result.id) < (%s, %s)")
@@ -198,7 +204,7 @@ def list_results(
     has_more = len(rows) > page_limit
     page_rows = rows[:page_limit]
     next_cursor = (
-        _encode_cursor(page_rows[-1][16], int(page_rows[-1][0]))
+        _encode_cursor(page_rows[-1][17], int(page_rows[-1][0]))
         if has_more and page_rows
         else None
     )
@@ -229,8 +235,9 @@ def _result_row(row: tuple[Any, ...]) -> dict[str, Any]:
         "id", "sourceType", "sourceId", "projectId", "templateId", "status", "title",
         "conclusion", "completedItems", "risks", "recommendedActions", "dataScope",
         "durationMs", "traceRef", "automationId", "automationName",
+        "dismissedAt",
     )
-    return {**dict(zip(keys, row[:16])), "createdAt": row[16].isoformat()}
+    return {**dict(zip(keys, row[:17])), "createdAt": row[17].isoformat()}
 
 
 def _encode_cursor(created_at: datetime, result_id: int) -> str:
@@ -263,8 +270,58 @@ def _decode_cursor(cursor: str) -> tuple[datetime, int]:
 
 
 def needs_attention(user_id: str) -> dict[str, Any]:
-    result = list_results(user_id, limit=100)
-    return {"items": [item for item in result["items"] if item["status"] in {"failed", "partial", "awaiting_confirmation"}]}
+    result = list_results(user_id, limit=100, attention_only=True)
+    return {"items": result["items"]}
+
+
+def dismiss_result(user_id: str, result_id: int) -> dict[str, Any]:
+    """Remove a resolved failure/partial result from attention without deleting history."""
+    _ensure()
+    with postgres_connection() as conn:
+        updated = conn.execute(
+            """UPDATE execution_result_summary
+               SET dismissed_at = COALESCE(dismissed_at, now())
+               WHERE user_id = %s AND id = %s AND status IN ('failed', 'partial')
+               RETURNING id""",
+            (user_id, result_id),
+        ).fetchone()
+        if updated is None:
+            existing = conn.execute(
+                "SELECT status FROM execution_result_summary WHERE user_id = %s AND id = %s",
+                (user_id, result_id),
+            ).fetchone()
+            if existing is None:
+                raise HTTPException(status_code=404, detail="执行结果不存在。")
+            raise HTTPException(status_code=409, detail="只有失败或部分完成的结果可以移出待处理。")
+        conn.commit()
+    result = get_result(user_id, result_id, track_view=False)
+    record_event(user_id, "result_dismissed", status=str(result["status"]), metadata={"entityId": result_id})
+    return result
+
+
+def restore_result(user_id: str, result_id: int) -> dict[str, Any]:
+    """Return a dismissed failure/partial result to attention without changing history."""
+    _ensure()
+    with postgres_connection() as conn:
+        updated = conn.execute(
+            """UPDATE execution_result_summary
+               SET dismissed_at = NULL
+               WHERE user_id = %s AND id = %s AND status IN ('failed', 'partial')
+               RETURNING id""",
+            (user_id, result_id),
+        ).fetchone()
+        if updated is None:
+            existing = conn.execute(
+                "SELECT status FROM execution_result_summary WHERE user_id = %s AND id = %s",
+                (user_id, result_id),
+            ).fetchone()
+            if existing is None:
+                raise HTTPException(status_code=404, detail="执行结果不存在。")
+            raise HTTPException(status_code=409, detail="只有失败或部分完成的结果可以恢复到待处理。")
+        conn.commit()
+    result = get_result(user_id, result_id, track_view=False)
+    record_event(user_id, "result_restored", status=str(result["status"]), metadata={"entityId": result_id})
+    return result
 
 
 def _ensure() -> None:

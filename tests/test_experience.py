@@ -114,6 +114,12 @@ def test_v42_product_event_enforces_database_bounds():
     {"eventType": "execution_filter_applied", "page": "execution-center", "actionType": "filter_change"},
     {"eventType": "result_source_opened", "page": "execution-center", "actionType": "view", "status": "completed"},
     {"eventType": "confirmation_completed", "page": "execution-center", "actionType": "confirm", "status": "confirmed"},
+    {"eventType": "auth_submit_total", "page": "login", "actionType": "login", "status": "failed", "errorCategory": "http"},
+    {"eventType": "auth_return_to_target_total", "page": "login", "actionType": "redirect", "status": "succeeded"},
+    {"eventType": "chat_drag_overlay_total", "page": "chat", "actionType": "show"},
+    {"eventType": "chat_folder_scan_total", "page": "chat", "actionType": "folder_drop", "status": "partial", "itemCount": 17},
+    {"eventType": "chat_folder_skip_total", "page": "chat", "actionType": "scan_limit", "status": "skipped", "itemCount": 23},
+    {"eventType": "chat_turn_submitted_total", "page": "chat", "actionType": "with_folder", "status": "succeeded", "itemCount": 3},
 ])
 def test_v42_current_frontend_product_events_match_the_strict_contract(payload):
     assert ProductEventRequest(**payload).eventType == payload["eventType"]

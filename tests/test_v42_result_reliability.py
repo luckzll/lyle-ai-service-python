@@ -228,7 +228,7 @@ def test_result_list_batches_automation_association_without_per_item_detail_quer
     row = (
         301, "workflow_run", "101", 7, None, "failed", "巡检需要处理",
         "运行失败。", [], ["运行失败。"], [{"type": "retry", "label": "重试"}],
-        ["所选项目"], 1200, "workflow_run:101", 17, "每日巡检", now,
+        ["所选项目"], 1200, "workflow_run:101", 17, "每日巡检", None, now,
     )
     connection = _RowsConnection([row])
     monkeypatch.setattr(result_summary_service.settings, "postgres_enabled", True)
@@ -260,7 +260,7 @@ def test_result_list_uses_keyset_cursor_and_server_side_automation_filter(monkey
         return (
             result_id, "workflow_run", str(result_id), 7, None, "completed", "已完成",
             "检查完成。", [], [], [], ["所选项目"], 100, f"workflow_run:{result_id}",
-            17, "每日巡检", created_at,
+            17, "每日巡检", None, created_at,
         )
 
     rows = [
@@ -282,6 +282,7 @@ def test_result_list_uses_keyset_cursor_and_server_side_automation_filter(monkey
         limit=2,
         cursor=initial_cursor,
         automation_id=17,
+        attention_only=True,
     )
 
     assert [item["id"] for item in result["items"]] == [303, 302]
@@ -292,6 +293,8 @@ def test_result_list_uses_keyset_cursor_and_server_side_automation_filter(monkey
     )
     result_query, params = connection.queries[-1]
     assert "automation_run.automation_id=%s" in result_query
+    assert "result.dismissed_at IS NULL" in result_query
+    assert "result.status IN ('failed', 'partial', 'awaiting_confirmation')" in result_query
     assert "(result.created_at, result.id) < (%s, %s)" in result_query
     assert params == ["42", 17, now, 400, 3]
 
@@ -304,3 +307,74 @@ def test_result_cursor_rejects_malformed_or_naive_time_values():
     naive = result_summary_service._encode_cursor(datetime(2026, 7, 11), 10)
     with pytest.raises(HTTPException):
         result_summary_service._decode_cursor(naive)
+
+
+class _DismissConnection:
+    def __init__(self, *, updated=True, existing_status="failed"):
+        self.updated = updated
+        self.existing_status = existing_status
+        self.queries = []
+        self.committed = False
+
+    def execute(self, query, params):
+        self.queries.append((query, params))
+        if query.lstrip().startswith("UPDATE execution_result_summary"):
+            return _RowsCursor([(301,)] if self.updated else [])
+        if "SELECT status FROM execution_result_summary" in query:
+            return _RowsCursor([(self.existing_status,)] if self.existing_status else [])
+        raise AssertionError(f"Unexpected query: {query}")
+
+    def commit(self):
+        self.committed = True
+
+
+def test_dismiss_result_is_persistent_idempotent_and_keeps_history(monkeypatch):
+    connection = _DismissConnection()
+    events = []
+    monkeypatch.setattr(result_summary_service.settings, "postgres_enabled", True)
+    monkeypatch.setattr(result_summary_service, "postgres_connection", _connection_factory(connection))
+    monkeypatch.setattr(
+        result_summary_service,
+        "get_result",
+        lambda *_args, **_kwargs: {"id": 301, "status": "failed", "dismissedAt": "2026-07-22T00:00:00+00:00"},
+    )
+    monkeypatch.setattr(result_summary_service, "record_event", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    result = result_summary_service.dismiss_result("42", 301)
+
+    assert result["dismissedAt"] is not None
+    assert connection.committed is True
+    assert "COALESCE(dismissed_at, now())" in connection.queries[0][0]
+    assert "status IN ('failed', 'partial')" in connection.queries[0][0]
+    assert events[0][0][:2] == ("42", "result_dismissed")
+
+
+def test_dismiss_result_rejects_confirmation_items(monkeypatch):
+    connection = _DismissConnection(updated=False, existing_status="awaiting_confirmation")
+    monkeypatch.setattr(result_summary_service.settings, "postgres_enabled", True)
+    monkeypatch.setattr(result_summary_service, "postgres_connection", _connection_factory(connection))
+
+    with pytest.raises(HTTPException) as error:
+        result_summary_service.dismiss_result("42", 301)
+
+    assert error.value.status_code == 409
+
+
+def test_restore_result_returns_dismissed_result_to_attention(monkeypatch):
+    connection = _DismissConnection()
+    events = []
+    monkeypatch.setattr(result_summary_service.settings, "postgres_enabled", True)
+    monkeypatch.setattr(result_summary_service, "postgres_connection", _connection_factory(connection))
+    monkeypatch.setattr(
+        result_summary_service,
+        "get_result",
+        lambda *_args, **_kwargs: {"id": 301, "status": "failed", "dismissedAt": None},
+    )
+    monkeypatch.setattr(result_summary_service, "record_event", lambda *args, **kwargs: events.append((args, kwargs)))
+
+    result = result_summary_service.restore_result("42", 301)
+
+    assert result["dismissedAt"] is None
+    assert connection.committed is True
+    assert "SET dismissed_at = NULL" in connection.queries[0][0]
+    assert events[0][0][:2] == ("42", "result_restored")
