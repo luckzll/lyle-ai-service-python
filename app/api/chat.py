@@ -32,6 +32,12 @@ from app.tools.image_tool import (
     iter_image_batch_results,
 )
 from app.tools.tool_audit import audit_tool_call
+from app.usage.context import (
+    ModelCallContext,
+    activate_model_call_context,
+    set_model_call_context,
+    usage_totals,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -44,10 +50,13 @@ def write_memory_in_background(
     answer: str,
     ai_config: dict[str, str] | None = None,
     structured_candidates_prepared: bool = False,
+    usage_context: ModelCallContext | None = None,
 ) -> None:
     """在 HTTP 响应返回后执行记忆写入（结构化抽取 / 摘要压缩 / 向量写入），不阻塞用户。"""
     started = perf_counter()
     try:
+        if usage_context is not None:
+            set_model_call_context(usage_context)
         with temporary_ai_config(ai_config):
             write_result = remember_interaction(
                 user_id,
@@ -73,6 +82,7 @@ def write_memory_in_background(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
+    usage_context = activate_model_call_context(request)
     effective_message = message_with_image_attachments(request)
     attachment_context, attachment_results = build_turn_attachment_context(request)
     try:
@@ -131,6 +141,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         answer,
         request.ai_config,
         True,
+        usage_context,
     )
     agent_trace = [
         *(result.get("agent_trace") or []),
@@ -167,7 +178,13 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             )
             for item in contexts
         ],
-        usage=Usage(promptTokens=0, completionTokens=0),
+        usage=Usage(
+            promptTokens=int(usage_totals(usage_context)["prompt_tokens"]),
+            completionTokens=int(usage_totals(usage_context)["completion_tokens"]),
+            callCount=int(usage_totals(usage_context)["call_count"]),
+            estimatedCostMicros=int(usage_totals(usage_context)["estimated_cost_micros"]),
+            measurementSource=str(usage_totals(usage_context)["measurement_source"]),
+        ),
         agentTrace=agent_trace,
         toolResults=tool_results,
         candidateMemories=candidate_memories,
@@ -184,6 +201,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
 
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
+    usage_context = activate_model_call_context(request)
     attachment_context, attachment_results = build_turn_attachment_context(request)
     effective_image_message = message_with_image_attachments(request)
     image_tool = _stream_image_tool(effective_image_message)
@@ -251,6 +269,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     final_answer_holder: dict[str, str] = {}
 
     def generate():
+        set_model_call_context(usage_context)
         stream_started = perf_counter()
         answer_parts = []
         used_v3_preview = False
@@ -485,6 +504,13 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "executionSuggestions": build_execution_suggestions(request.user_id, request.message),
                     "projectContext": project_context,
                     "review": review,
+                    "usage": {
+                        "promptTokens": usage_totals(usage_context)["prompt_tokens"],
+                        "completionTokens": usage_totals(usage_context)["completion_tokens"],
+                        "callCount": usage_totals(usage_context)["call_count"],
+                        "estimatedCostMicros": usage_totals(usage_context)["estimated_cost_micros"],
+                        "measurementSource": usage_totals(usage_context)["measurement_source"],
+                    },
                 }
                 meta_started = perf_counter()
                 yield _sse("meta", meta)
@@ -518,6 +544,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             answer,
             request.ai_config,
             True,
+            usage_context,
         )
 
     return StreamingResponse(

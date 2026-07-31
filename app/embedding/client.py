@@ -6,6 +6,7 @@ from threading import Lock
 import httpx
 
 from app.core.config import settings
+from app.usage.manual import begin_external_call, estimate_text_tokens, finish_external_call
 
 
 EMBEDDING_DIMENSION = settings.embedding_dimension
@@ -91,14 +92,48 @@ def _embed_with_openai_compatible(text: str) -> list[float]:
         "model": settings.embedding_model,
         "input": text or "",
     }
-    with httpx.Client(timeout=settings.embedding_timeout_seconds) as client:
-        response = client.post(
-            f"{settings.embedding_base_url.rstrip('/')}/embeddings",
-            headers=headers,
-            json=payload,
+    estimated_input = estimate_text_tokens(text)
+    estimated_cost = round(estimated_input * settings.ai_usage_embedding_price_cny_per_million)
+    ticket = begin_external_call(
+        estimated_input_tokens=estimated_input,
+        estimated_cost_micros=estimated_cost,
+    )
+    try:
+        with httpx.Client(timeout=settings.embedding_timeout_seconds) as client:
+            response = client.post(
+                f"{settings.embedding_base_url.rstrip('/')}/embeddings",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as error:
+        finish_external_call(
+            ticket,
+            call_type="EMBEDDING",
+            task_type="EMBEDDING",
+            provider=settings.embedding_provider,
+            model=settings.embedding_model,
+            input_tokens=estimated_input,
+            estimated_cost_micros=estimated_cost,
+            status="FAILED",
+            error_category=type(error).__name__,
         )
-        response.raise_for_status()
-        data = response.json()
+        raise
+    usage = data.get("usage") if isinstance(data, dict) else {}
+    provider_tokens = int((usage or {}).get("total_tokens") or (usage or {}).get("prompt_tokens") or 0)
+    finish_external_call(
+        ticket,
+        call_type="EMBEDDING",
+        task_type="EMBEDDING",
+        provider=settings.embedding_provider,
+        model=settings.embedding_model,
+        input_tokens=provider_tokens or estimated_input,
+        usage_source="PROVIDER_REPORTED" if provider_tokens else "ESTIMATED",
+        estimated_cost_micros=round(
+            (provider_tokens or estimated_input) * settings.ai_usage_embedding_price_cny_per_million
+        ),
+    )
     return [float(value) for value in data["data"][0]["embedding"]]
 
 

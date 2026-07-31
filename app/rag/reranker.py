@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.core.config import settings
+from app.usage.manual import begin_external_call, estimate_text_tokens, finish_external_call
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,35 @@ def _rerank_with_flag_embedding(
 ) -> list[dict[str, Any]]:
     model = _flag_reranker_model()
     pairs = [[query, str(item.get(text_key) or "")] for item in items]
-    scores = model.compute_score(pairs, normalize=True)
+    estimated_input = sum(
+        estimate_text_tokens(str(left)) + estimate_text_tokens(str(right))
+        for left, right in pairs
+    )
+    ticket = begin_external_call(estimated_input_tokens=estimated_input)
+    try:
+        scores = model.compute_score(pairs, normalize=True)
+    except Exception as error:
+        finish_external_call(
+            ticket,
+            call_type="RERANK",
+            task_type="RERANK",
+            provider=settings.rerank_provider,
+            model=settings.rerank_model,
+            input_tokens=estimated_input,
+            status="FAILED",
+            error_category=type(error).__name__,
+        )
+        raise
+    finish_external_call(
+        ticket,
+        call_type="RERANK",
+        task_type="RERANK",
+        provider=settings.rerank_provider,
+        model=settings.rerank_model,
+        input_tokens=estimated_input,
+        usage_source="ESTIMATED",
+        estimated_cost_micros=0,
+    )
     if not isinstance(scores, list):
         scores = [float(scores)]
 

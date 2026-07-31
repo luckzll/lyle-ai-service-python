@@ -8,6 +8,7 @@ from app.llm.providers.deepseek import DeepSeekProvider
 from app.llm.providers.local_ollama import LocalOllamaProvider
 from app.llm.providers.openai import OpenAIProvider
 from app.llm.providers.qwen import QwenProvider
+from app.usage.callbacks import UsageCallbackHandler
 
 
 TASK_CHAT = "chat"
@@ -31,7 +32,11 @@ def _providers() -> dict[str, OpenAICompatibleProvider]:
 def build_chat_model_for_task(task: str, streaming: bool = False) -> ChatOpenAI:
     config = get_model_config(task)
     provider = get_provider(config.provider)
-    return provider.build_chat_model(config, streaming=streaming)
+    return provider.build_chat_model(
+        config,
+        streaming=streaming,
+        callbacks=[UsageCallbackHandler(task, config.provider, config.model)],
+    )
 
 
 def is_task_model_configured(task: str) -> bool:

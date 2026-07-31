@@ -44,6 +44,7 @@ def test_result_summary_masks_sensitive_values():
 
 
 def test_recommended_connection_placeholders_are_navigation_actions(monkeypatch):
+    monkeypatch.setattr("app.experience.connection_diagnostics.settings.postgres_enabled", True)
     monkeypatch.setattr("app.experience.connection_diagnostics.list_workspaces", lambda user_id: [])
     monkeypatch.setattr("app.experience.connection_diagnostics.list_mcp_servers", lambda user_id: [])
 

@@ -29,6 +29,8 @@ app/
 
 `/health` 仅用于进程存活检查；部署流量应以 `/ready` 为准。Docker 镜像构建会预拉取默认 FastEmbed 模型，服务启动时还会执行一次真实向量预热，避免首个用户请求承担模型下载和加载时间。
 
+V6.4 为 Chat、Intent、Memory、Summary、Judge、Embedding、Rerank、图片理解与图片生成接入统一用量上下文。生产环境先把事件写入 PostgreSQL `usage_event_outbox`，后台 worker 再批量上报 Java；无 PostgreSQL 的本地模式才同步降级上报。模型输入、图片内容和 Authorization 不进入用量事件。
+
 ## 执行体验
 
 执行体验在工作流与自动化之上增加受控模板、草稿、首次巡检、执行结果与确认收件箱。对外接口统一由 Java 登录态代理，Python 路由仅接收已注入的 `user_id`：

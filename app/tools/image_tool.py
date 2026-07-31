@@ -9,6 +9,7 @@ import tempfile
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -16,6 +17,7 @@ import httpx
 
 from app.core.config import settings
 from app.tools.image_intent import is_image_generation_request
+from app.usage.manual import begin_external_call, estimate_text_tokens, finish_external_call
 
 
 def analyze_image_from_question(question: str) -> dict[str, object]:
@@ -101,7 +103,7 @@ def iter_image_batch_results(spec: dict[str, Any]) -> Iterator[dict[str, Any]]:
     concurrency = max(1, min(int(settings.image_batch_concurrency), count, 32))
     executor = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="image-batch")
     futures: dict[Future[dict[str, Any]], int] = {
-        executor.submit(_execute_image_item, spec, index): index
+        executor.submit(copy_context().run, _execute_image_item, spec, index): index
         for index in range(count)
     }
     try:
@@ -233,6 +235,27 @@ def _execute_image_item(spec: dict[str, Any], index: int) -> dict[str, Any]:
 
 def _post_json(path: str, payload: dict[str, object], timeout: float | None = None) -> dict[str, object]:
     endpoint = f"{settings.ark_base_url.rstrip('/')}{path}"
+    is_image_call = path.startswith("/images/")
+    prompt = str(payload.get("prompt") or "")
+    if not prompt and isinstance(payload.get("messages"), list):
+        prompt = str(payload.get("messages"))
+    estimated_input = estimate_text_tokens(prompt)
+    reserved_cost = (
+        settings.ai_usage_image_cost_micros_per_call
+        if is_image_call
+        else round(estimated_input * settings.ai_usage_input_price_cny_per_million)
+    )
+    ticket = begin_external_call(
+        estimated_input_tokens=estimated_input,
+        estimated_cost_micros=reserved_cost,
+    )
+    task_type = (
+        "IMAGE_EDIT"
+        if is_image_call and any(key in payload for key in ("image", "image_urls", "image_input", "images"))
+        else "IMAGE_GENERATE"
+        if is_image_call
+        else "IMAGE_ANALYZE"
+    )
     try:
         with httpx.Client(timeout=timeout or settings.llm_timeout_seconds) as client:
             response = client.post(
@@ -245,9 +268,43 @@ def _post_json(path: str, payload: dict[str, object], timeout: float | None = No
             )
             response.raise_for_status()
             data = response.json()
-    except httpx.HTTPStatusError as exc:
-        detail = exc.response.text[:1000] if exc.response is not None else str(exc)
-        raise RuntimeError(f"图片模型请求失败：HTTP {exc.response.status_code} {detail}") from exc
+    except Exception as exc:
+        finish_external_call(
+            ticket,
+            call_type="IMAGE_GENERATION" if is_image_call else "LLM_VISION",
+            task_type=task_type,
+            provider=settings.image_model_provider if is_image_call else settings.vision_model_provider,
+            model=str(payload.get("model") or settings.image_model_name),
+            input_tokens=estimated_input,
+            estimated_cost_micros=reserved_cost,
+            status="FAILED",
+            error_category=type(exc).__name__,
+        )
+        if isinstance(exc, httpx.HTTPStatusError):
+            detail = exc.response.text[:1000] if exc.response is not None else str(exc)
+            raise RuntimeError(f"图片模型请求失败：HTTP {exc.response.status_code} {detail}") from exc
+        raise
+    usage = data.get("usage") if isinstance(data, dict) else {}
+    provider_input = int((usage or {}).get("prompt_tokens") or (usage or {}).get("input_tokens") or 0)
+    provider_output = int((usage or {}).get("completion_tokens") or (usage or {}).get("output_tokens") or 0)
+    finish_external_call(
+        ticket,
+        call_type="IMAGE_GENERATION" if is_image_call else "LLM_VISION",
+        task_type=task_type,
+        provider=settings.image_model_provider if is_image_call else settings.vision_model_provider,
+        model=str(payload.get("model") or settings.image_model_name),
+        input_tokens=provider_input or estimated_input,
+        output_tokens=provider_output,
+        usage_source="PROVIDER_REPORTED" if provider_input or provider_output else "ESTIMATED",
+        estimated_cost_micros=(
+            reserved_cost
+            if is_image_call
+            else round(
+                (provider_input or estimated_input) * settings.ai_usage_input_price_cny_per_million
+                + provider_output * settings.ai_usage_output_price_cny_per_million
+            )
+        ),
+    )
     return data if isinstance(data, dict) else {}
 
 

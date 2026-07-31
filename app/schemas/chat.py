@@ -36,6 +36,9 @@ class ChatRequest(BaseModel):
     stream: bool = False
     aiConfig: dict[str, str] = Field(default_factory=dict)
     attachments: list[ChatAttachment] = Field(default_factory=list)
+    traceId: str | None = None
+    reservationId: str | None = None
+    usageBudget: dict[str, int] = Field(default_factory=dict)
 
     @property
     def user_id(self) -> str:
@@ -78,6 +81,9 @@ class Source(BaseModel):
 class Usage(BaseModel):
     prompt_tokens: int = Field(alias="promptTokens")
     completion_tokens: int = Field(alias="completionTokens")
+    call_count: int = Field(default=0, alias="callCount")
+    estimated_cost_micros: int = Field(default=0, alias="estimatedCostMicros")
+    measurement_source: str = Field(default="PENDING", alias="measurementSource")
 
 
 class ChatResponse(BaseModel):

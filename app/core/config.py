@@ -152,6 +152,21 @@ class Settings(BaseSettings):
     # Python API 简单限流，每分钟最大请求数。
     python_rate_limit_per_minute: int = 120
 
+    # ===== V6.4 AI 用量治理 =====
+    ai_usage_reporting_enabled: bool = True
+    ai_usage_java_base_url: str = "http://localhost:8080/api"
+    ai_usage_internal_token: str = "lyle-dev-usage-token-change-me"
+    ai_usage_reporting_timeout_seconds: float = 3.0
+    ai_usage_route_version: str = "v6.4-1"
+    ai_usage_pricing_version: str = "2026-07-23"
+    # 价格单位为 CNY / 百万 Token；费用仅作治理估算，不代表账单。
+    ai_usage_input_price_cny_per_million: float = 2.0
+    ai_usage_output_price_cny_per_million: float = 8.0
+    ai_usage_embedding_price_cny_per_million: float = 0.0
+    ai_usage_image_cost_micros_per_call: int = 0
+    ai_usage_outbox_worker_enabled: bool = True
+    ai_usage_outbox_worker_interval_seconds: int = 15
+
     # ===== PostgreSQL 连接池 =====
     # Python 记忆库 PostgreSQL 连接池大小。
     postgres_pool_min_size: int = 1
