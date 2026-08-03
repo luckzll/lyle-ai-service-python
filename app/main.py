@@ -100,7 +100,7 @@ async def lifespan(app: FastAPI):
     logger.info("Python AI service stopped.")
 
 
-app = FastAPI(title="AI App Python Service", version="6.4.0", lifespan=lifespan)
+app = FastAPI(title="AI App Python Service", version="6.5.0", lifespan=lifespan)
 app.middleware("http")(metrics_middleware)
 app.middleware("http")(rate_limit_middleware)
 app.middleware("http")(internal_token_middleware)
