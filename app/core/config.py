@@ -277,5 +277,18 @@ class Settings(BaseSettings):
     # 结构化记忆冲突处理：新记忆置信度低于旧记忆超过该差值时忽略新记忆。
     structured_memory_conflict_confidence_margin: float = 0.15
 
+    # ===== V6.6 可信记忆治理 =====
+    memory_unified_view_enabled: bool = True
+    memory_conflict_shadow_enabled: bool = False
+    memory_conflict_center_enabled: bool = True
+    memory_usage_explanation_enabled: bool = True
+    memory_evidence_confidence_enabled: bool = True
+    memory_source_validation_enabled: bool = True
+    memory_source_validator_base_url: str = "http://localhost:8080/api"
+    memory_source_validation_timeout_seconds: float = 2.0
+    memory_source_validation_fail_closed: bool = True
+    memory_purge_worker_enabled: bool = True
+    memory_purge_worker_interval_seconds: int = 10
+
 
 settings = Settings()

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from app.memory.fragments import list_memory_fragments
+from app.memory.evidence_store import evidence_count_by_profile
+from app.memory.governance import reliability_for_profile
 from app.memory.profile_schema import is_sensitive_path, schema_item
 from app.memory.profile_store import PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE, list_user_profiles, mark_profiles_used
 
 
 def build_profile_memory_context(user_id: str, question: str, plan: dict[str, object], *, limit: int = 8) -> dict[str, object]:
     requested_paths = [str(item) for item in plan.get("schemaPaths") or []]
-    profiles = list_user_profiles(user_id, status="active", limit=200)
+    all_profiles = list_user_profiles(user_id, limit=500)
+    profiles = [item for item in all_profiles if str(item.get("status") or "") == "active"]
     profiles = [
         item for item in profiles
         if float(item.get("confidence") or 0) >= PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE
@@ -15,8 +18,23 @@ def build_profile_memory_context(user_id: str, question: str, plan: dict[str, ob
     if requested_paths != ["*"]:
         allowed = set(requested_paths)
         profiles = [item for item in profiles if str(item.get("schemaPath")) in allowed]
-    profiles = profiles[:limit]
+    sensitive_count = sum(1 for item in profiles if is_sensitive_path(str(item.get("schemaPath") or "")))
+    profiles = [item for item in profiles if not is_sensitive_path(str(item.get("schemaPath") or ""))][:limit]
     mark_profiles_used(user_id, [str(item.get("schemaPath")) for item in profiles if item.get("schemaPath")])
+
+    evidence_counts = evidence_count_by_profile(user_id)
+    reason_code = _reason_code(question, plan)
+    used_memories = [
+        {
+            "memoryId": f"profile:{int(profile.get('id') or 0)}",
+            "title": str(profile.get("label") or schema_item(str(profile.get("schemaPath") or "")).label),
+            "valueSummary": str(profile.get("summary") or profile.get("value") or "")[:240],
+            "reasonCode": reason_code,
+            "reliability": reliability_for_profile(profile),
+            "sourceCount": evidence_counts.get(int(profile.get("id") or 0), 0),
+        }
+        for profile in profiles
+    ]
 
     fragments: list[dict[str, object]] = []
     for profile in profiles:
@@ -34,6 +52,15 @@ def build_profile_memory_context(user_id: str, question: str, plan: dict[str, ob
         "profiles": profiles,
         "fragments": fragments[:limit],
         "recallPlan": plan,
+        "usedMemories": used_memories,
+        "memoryExclusions": {
+            "conflicted": sum(1 for item in all_profiles if str(item.get("status") or "") == "conflicted"),
+            "sensitive": sensitive_count,
+            "governed": sum(
+                1 for item in all_profiles
+                if str(item.get("status") or "") in {"disabled", "forgotten", "expired"}
+            ),
+        },
     }
 
 
@@ -62,3 +89,11 @@ def _format_context(profiles: list[dict[str, object]]) -> str:
     if sensitive_count:
         parts.append(f"敏感画像：本轮已过滤 {sensitive_count} 条。")
     return "\n\n".join(parts)
+
+
+def _reason_code(question: str, plan: dict[str, object]) -> str:
+    if any(marker in question for marker in ("记得", "回忆", "之前", "上次")):
+        return "USER_REQUESTED_RECALL"
+    if str(plan.get("intent") or "") in {"project", "planning"}:
+        return "PROJECT_CONTEXT"
+    return "QUESTION_RELEVANT"

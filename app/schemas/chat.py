@@ -30,6 +30,7 @@ class ChatRequest(BaseModel):
     userId: str
     conversationId: str | None = None
     turnId: str | None = None
+    sourceMessageId: str | None = None
     projectId: int | None = None
     message: str
     knowledgeBaseIds: list[str] = Field(default_factory=list)
@@ -51,6 +52,10 @@ class ChatRequest(BaseModel):
     @property
     def turn_id(self) -> str | None:
         return self.turnId
+
+    @property
+    def source_message_id(self) -> str | None:
+        return self.sourceMessageId
 
     @property
     def project_id(self) -> int | None:
@@ -101,3 +106,6 @@ class ChatResponse(BaseModel):
     execution_suggestions: list[dict[str, object]] = Field(default_factory=list, alias="executionSuggestions")
     project_context: dict[str, object] = Field(default_factory=dict, alias="projectContext")
     review: dict[str, object] = Field(default_factory=dict)
+    used_memories: list[dict[str, object]] = Field(default_factory=list, alias="usedMemories")
+    memory_exclusions: dict[str, int] = Field(default_factory=dict, alias="memoryExclusions")
+    memory_explanation_version: str = Field(default="v1", alias="memoryExplanationVersion")

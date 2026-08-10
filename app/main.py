@@ -39,6 +39,7 @@ from app.workers.memory_decay_worker import run_memory_decay_worker
 from app.workers.notification_worker import run_notification_worker
 from app.workers.automation_scheduler_worker import run_automation_scheduler_worker
 from app.workers.usage_outbox_worker import run_usage_outbox_worker
+from app.workers.memory_purge_worker import run_memory_purge_worker
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -76,6 +77,7 @@ async def lifespan(app: FastAPI):
     memory_decay_task: asyncio.Task[None] | None = None
     automation_task: asyncio.Task[None] | None = None
     usage_outbox_task: asyncio.Task[None] | None = None
+    memory_purge_task: asyncio.Task[None] | None = None
     if settings.notification_worker_enabled:
         notification_task = asyncio.create_task(run_notification_worker(stop_event))
     if settings.memory_decay_worker_enabled:
@@ -84,6 +86,8 @@ async def lifespan(app: FastAPI):
         automation_task = asyncio.create_task(run_automation_scheduler_worker(stop_event))
     if settings.ai_usage_outbox_worker_enabled and settings.postgres_enabled:
         usage_outbox_task = asyncio.create_task(run_usage_outbox_worker(stop_event))
+    if settings.memory_purge_worker_enabled:
+        memory_purge_task = asyncio.create_task(run_memory_purge_worker(stop_event))
     try:
         yield
     finally:
@@ -96,11 +100,13 @@ async def lifespan(app: FastAPI):
             await automation_task
         if usage_outbox_task is not None:
             await usage_outbox_task
+        if memory_purge_task is not None:
+            await memory_purge_task
     close_postgres_pool()
     logger.info("Python AI service stopped.")
 
 
-app = FastAPI(title="AI App Python Service", version="6.5.0", lifespan=lifespan)
+app = FastAPI(title="AI App Python Service", version="6.6.0", lifespan=lifespan)
 app.middleware("http")(metrics_middleware)
 app.middleware("http")(rate_limit_middleware)
 app.middleware("http")(internal_token_middleware)

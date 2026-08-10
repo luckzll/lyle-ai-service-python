@@ -536,7 +536,7 @@ def test_recall_planner_combines_project_and_communication_paths(monkeypatch):
     assert {"work.current_role", "projects.current", "preferences.output_style"} <= paths
 
 
-def test_profile_recall_usage_updates_hit_count_and_confidence(monkeypatch):
+def test_profile_recall_usage_updates_hit_count_without_self_reinforcing_confidence(monkeypatch):
     monkeypatch.setattr(settings, "redis_enabled", False)
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "qdrant_enabled", False)
@@ -551,7 +551,7 @@ def test_profile_recall_usage_updates_hit_count_and_confidence(monkeypatch):
     assert any(item["schemaPath"] == "work.current_role" for item in memory["profiles"])
     assert before["hitCount"] == 0
     assert after["hitCount"] == 1
-    assert after["confidence"] > before["confidence"]
+    assert after["confidence"] == before["confidence"]
 
 
 def test_low_effective_confidence_profile_is_not_injected(monkeypatch):

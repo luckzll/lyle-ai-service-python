@@ -129,6 +129,29 @@ def evidence_count_by_profile(user_id: str) -> dict[int, int]:
         return counts
 
 
+def delete_profile_evidence(user_id: str, profile_id: int) -> int:
+    """Hard delete source links before a profile privacy purge."""
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM profile_evidence WHERE user_id = %s AND profile_id = %s",
+                    (user_id, profile_id),
+                )
+                deleted = max(0, cur.rowcount)
+            conn.commit()
+        return deleted
+    with _lock:
+        user_evidence = _evidence.get(user_id, {})
+        deleted_ids = [item_id for item_id, item in user_evidence.items() if item.profile_id == profile_id]
+        for item_id in deleted_ids:
+            user_evidence.pop(item_id, None)
+        if not user_evidence:
+            _evidence.pop(user_id, None)
+    return len(deleted_ids)
+
+
 def _ensure_postgres_schema() -> None:
     global _postgres_ready
     if _postgres_ready:
@@ -164,7 +187,9 @@ def _ensure_postgres_schema() -> None:
 
 def _normalise_relation(relation: str) -> str:
     value = (relation or "support").strip().lower()
-    return value if value in {"support", "contradict", "correction", "manual"} else "support"
+    return value if value in {
+        "support", "supplement", "contradict", "correction", "duplicate", "manual"
+    } else "support"
 
 
 def _evidence_from_row(row: tuple) -> ProfileEvidence:

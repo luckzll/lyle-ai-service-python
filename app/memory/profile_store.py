@@ -30,7 +30,6 @@ _lock = Lock()
 _profiles: dict[str, dict[str, UserProfile]] = {}
 _next_id = 1
 _postgres_ready = False
-PROFILE_USAGE_CONFIDENCE_BOOST = 0.01
 PROFILE_MAX_CONFIDENCE = 0.95
 PROFILE_MONTHLY_DECAY = 0.01
 PROFILE_DECAY_INTERVAL_SECONDS = 30 * 24 * 60 * 60
@@ -57,21 +56,25 @@ def upsert_user_profile(
                 cur.execute(
                     """
                     INSERT INTO user_profile (
-                      user_id, schema_path, value, summary, confidence, status, created_at, updated_at
+                      user_id, schema_path, value, summary, confidence, evidence_confidence, status, created_at, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
                     ON CONFLICT (user_id, schema_path)
                     DO UPDATE SET
                       value = EXCLUDED.value,
                       summary = CASE WHEN EXCLUDED.summary = '' THEN user_profile.summary ELSE EXCLUDED.summary END,
                       confidence = GREATEST(user_profile.confidence, EXCLUDED.confidence),
+                      evidence_confidence = GREATEST(
+                        COALESCE(user_profile.evidence_confidence, user_profile.confidence),
+                        EXCLUDED.evidence_confidence
+                      ),
                       status = EXCLUDED.status,
                       updated_at = EXCLUDED.updated_at
                     RETURNING id, user_id, schema_path, value, summary, confidence, status,
                               extract(epoch from last_used_at), hit_count, correction_count,
                               extract(epoch from created_at), extract(epoch from updated_at)
                     """,
-                    (user_id, schema_path, merged_value, summary, confidence, status, now, now),
+                    (user_id, schema_path, merged_value, summary, confidence, confidence, status, now, now),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -200,6 +203,105 @@ def set_user_profile_status(user_id: str, schema_path: str, status: str) -> dict
     return _profile_to_api(item)
 
 
+def delete_user_profile(user_id: str, schema_path: str) -> bool:
+    """Hard delete reserved for the asynchronous privacy purge worker."""
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM user_profile WHERE user_id = %s AND schema_path = %s",
+                    (user_id, schema_path),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+        return deleted
+    with _lock:
+        user_profiles = _profiles.get(user_id, {})
+        deleted = user_profiles.pop(schema_path, None) is not None
+        if not user_profiles:
+            _profiles.pop(user_id, None)
+    return deleted
+
+
+def replace_user_profile_value(
+    user_id: str,
+    schema_path: str,
+    value: str,
+    *,
+    summary: str | None = None,
+    confidence: float | None = None,
+    status: str = "active",
+) -> dict[str, object]:
+    """Replace a profile value after an explicit user governance decision.
+
+    This deliberately bypasses the multi-value merge used during extraction: a
+    correction is the user's chosen current truth, not another supporting item.
+    """
+    current = get_user_profile(user_id, schema_path)
+    if not current:
+        return upsert_user_profile(
+            user_id,
+            schema_path,
+            value,
+            summary=summary if summary is not None else value,
+            confidence=confidence if confidence is not None else 0.9,
+            status=status,
+        )
+    now = time()
+    next_confidence = _clamp_confidence(
+        confidence if confidence is not None else max(float(current.get("confidence") or 0.8), 0.9),
+        PROFILE_MAX_CONFIDENCE,
+    )
+    normalized_status = _normalise_profile_status(status)
+    next_summary = summary if summary is not None else value
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE user_profile
+                    SET value = %s,
+                        summary = %s,
+                        confidence = %s,
+                        evidence_confidence = %s,
+                        status = %s,
+                        correction_count = correction_count + 1,
+                        updated_at = to_timestamp(%s)
+                    WHERE user_id = %s AND schema_path = %s
+                    RETURNING id, user_id, schema_path, value, summary, confidence, status,
+                              extract(epoch from last_used_at), hit_count, correction_count,
+                              extract(epoch from created_at), extract(epoch from updated_at)
+                    """,
+                    (
+                        value,
+                        next_summary,
+                        next_confidence,
+                        next_confidence,
+                        normalized_status,
+                        now,
+                        user_id,
+                        schema_path,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+        return _profile_to_api(_profile_from_row(row)) if row else {}
+
+    with _lock:
+        item = _profiles.get(user_id, {}).get(schema_path)
+        if not item:
+            return {}
+        item.value = value
+        item.summary = next_summary
+        item.confidence = next_confidence
+        item.status = normalized_status
+        item.correction_count += 1
+        item.updated_at = now
+    return _profile_to_api(item)
+
+
 def update_user_profile_summary(
     user_id: str,
     schema_path: str,
@@ -220,13 +322,26 @@ def update_user_profile_summary(
                     UPDATE user_profile
                     SET summary = %s,
                         confidence = LEAST(%s, confidence + %s),
+                        evidence_confidence = LEAST(
+                          %s,
+                          COALESCE(evidence_confidence, confidence) + %s
+                        ),
                         updated_at = to_timestamp(%s)
                     WHERE user_id = %s AND schema_path = %s
                     RETURNING id, user_id, schema_path, value, summary, confidence, status,
                               extract(epoch from last_used_at), hit_count, correction_count,
                               extract(epoch from created_at), extract(epoch from updated_at)
                     """,
-                    (summary, PROFILE_MAX_CONFIDENCE, confidence_boost, now, user_id, schema_path),
+                    (
+                        summary,
+                        PROFILE_MAX_CONFIDENCE,
+                        confidence_boost,
+                        PROFILE_MAX_CONFIDENCE,
+                        confidence_boost,
+                        now,
+                        user_id,
+                        schema_path,
+                    ),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -254,11 +369,10 @@ def mark_profiles_used(user_id: str, schema_paths: list[str]) -> None:
                     """
                     UPDATE user_profile
                     SET hit_count = hit_count + 1,
-                        last_used_at = to_timestamp(%s),
-                        confidence = LEAST(%s, confidence + %s)
+                        last_used_at = to_timestamp(%s)
                     WHERE user_id = %s AND schema_path = ANY(%s)
                     """,
-                    (now, PROFILE_MAX_CONFIDENCE, PROFILE_USAGE_CONFIDENCE_BOOST, user_id, schema_paths),
+                    (now, user_id, schema_paths),
                 )
             conn.commit()
         return
@@ -268,7 +382,6 @@ def mark_profiles_used(user_id: str, schema_paths: list[str]) -> None:
             if item:
                 item.hit_count += 1
                 item.last_used_at = now
-                item.confidence = _clamp_confidence(item.confidence + PROFILE_USAGE_CONFIDENCE_BOOST, PROFILE_MAX_CONFIDENCE)
 
 
 def apply_profile_decay(*, user_id: str | None = None, now: float | None = None) -> dict[str, int]:
@@ -348,6 +461,7 @@ def _ensure_postgres_schema() -> None:
                   value TEXT NOT NULL,
                   summary TEXT NOT NULL DEFAULT '',
                   confidence DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+                  evidence_confidence DOUBLE PRECISION,
                   status VARCHAR(32) NOT NULL DEFAULT 'active',
                   last_used_at TIMESTAMPTZ,
                   hit_count BIGINT NOT NULL DEFAULT 0,
@@ -362,6 +476,8 @@ def _ensure_postgres_schema() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_user_profile_user_status "
                 "ON user_profile(user_id, status, updated_at DESC)"
             )
+            cur.execute("ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS evidence_confidence DOUBLE PRECISION")
+            cur.execute("UPDATE user_profile SET evidence_confidence = confidence WHERE evidence_confidence IS NULL")
         conn.commit()
     _postgres_ready = True
 
@@ -407,6 +523,7 @@ def _profile_from_row(row: tuple) -> UserProfile:
 def _profile_to_api(profile: UserProfile) -> dict[str, object]:
     item = asdict(profile)
     item["confidence"] = _effective_profile_confidence(profile)
+    item["evidenceConfidence"] = item["confidence"]
     item["userId"] = item.pop("user_id")
     item["schemaPath"] = item.pop("schema_path")
     item["lastUsedAt"] = item.pop("last_used_at")

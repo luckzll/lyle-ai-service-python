@@ -16,6 +16,9 @@ class MemoryFragment:
     source_type: str
     source_id: str
     source_ref: str
+    source_message_id: str | None
+    source_chunk_id: str | None
+    source_created_at: float | None
     source_text: str
     normalized_text: str
     category: str
@@ -41,6 +44,9 @@ def create_memory_fragment(
     source_type: str = "conversation",
     source_id: str = "",
     source_ref: str = "",
+    source_message_id: str | None = None,
+    source_chunk_id: str | None = None,
+    source_created_at: float | None = None,
     confidence: float = 0.8,
     status: str = "active",
 ) -> dict[str, object]:
@@ -53,10 +59,15 @@ def create_memory_fragment(
                 cur.execute(
                     """
                     INSERT INTO memory_fragment (
-                      user_id, conversation_id, source_type, source_id, source_ref, source_text,
+                      user_id, conversation_id, source_type, source_id, source_ref,
+                      source_message_id, source_chunk_id, source_created_at, source_text,
                       normalized_text, category, confidence, status, created_at, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s))
+                    VALUES (
+                      %s, %s, %s, %s, %s, %s, %s,
+                      CASE WHEN %s::double precision IS NULL THEN NULL ELSE to_timestamp(%s::double precision) END,
+                      %s, %s, %s, %s, %s, to_timestamp(%s), to_timestamp(%s)
+                    )
                     RETURNING id, extract(epoch from created_at), extract(epoch from updated_at)
                     """,
                     (
@@ -65,6 +76,10 @@ def create_memory_fragment(
                         source_type,
                         source_id,
                         source_ref,
+                        source_message_id,
+                        source_chunk_id,
+                        source_created_at,
+                        source_created_at,
                         source_text,
                         normalized_text,
                         category,
@@ -83,6 +98,9 @@ def create_memory_fragment(
             source_type=source_type,
             source_id=source_id,
             source_ref=source_ref,
+            source_message_id=source_message_id,
+            source_chunk_id=source_chunk_id,
+            source_created_at=source_created_at,
             source_text=source_text,
             normalized_text=normalized_text,
             category=category,
@@ -104,6 +122,9 @@ def create_memory_fragment(
             source_type=source_type,
             source_id=source_id,
             source_ref=source_ref,
+            source_message_id=source_message_id,
+            source_chunk_id=source_chunk_id,
+            source_created_at=source_created_at,
             source_text=source_text,
             normalized_text=normalized_text,
             category=category,
@@ -139,7 +160,8 @@ def list_memory_fragments(
             with conn.cursor() as cur:
                 cur.execute(
                     f"""
-                    SELECT id, user_id, conversation_id, source_type, source_id, source_ref, source_text,
+                    SELECT id, user_id, conversation_id, source_type, source_id, source_ref,
+                           source_message_id, source_chunk_id, extract(epoch from source_created_at), source_text,
                            normalized_text, category, confidence, status,
                            extract(epoch from created_at), extract(epoch from updated_at)
                     FROM memory_fragment
@@ -169,7 +191,8 @@ def get_memory_fragment(user_id: str, fragment_id: int) -> dict[str, object] | N
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, user_id, conversation_id, source_type, source_id, source_ref, source_text,
+                    SELECT id, user_id, conversation_id, source_type, source_id, source_ref,
+                           source_message_id, source_chunk_id, extract(epoch from source_created_at), source_text,
                            normalized_text, category, confidence, status,
                            extract(epoch from created_at), extract(epoch from updated_at)
                     FROM memory_fragment
@@ -197,7 +220,8 @@ def set_memory_fragment_status(user_id: str, fragment_id: int, status: str) -> d
                     UPDATE memory_fragment
                     SET status = %s, updated_at = to_timestamp(%s)
                     WHERE user_id = %s AND id = %s
-                    RETURNING id, user_id, conversation_id, source_type, source_id, source_ref, source_text,
+                    RETURNING id, user_id, conversation_id, source_type, source_id, source_ref,
+                              source_message_id, source_chunk_id, extract(epoch from source_created_at), source_text,
                               normalized_text, category, confidence, status,
                               extract(epoch from created_at), extract(epoch from updated_at)
                     """,
@@ -216,6 +240,29 @@ def set_memory_fragment_status(user_id: str, fragment_id: int, status: str) -> d
         return _fragment_to_api(item)
 
 
+def delete_memory_fragments(user_id: str, *, category: str) -> list[int]:
+    """Hard delete fragments for one governed profile category."""
+    if settings.postgres_enabled:
+        _ensure_postgres_schema()
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM memory_fragment WHERE user_id = %s AND category = %s RETURNING id",
+                    (user_id, category),
+                )
+                deleted = [int(row[0]) for row in cur.fetchall()]
+            conn.commit()
+        return deleted
+    with _lock:
+        user_fragments = _fragments.get(user_id, {})
+        deleted = [item_id for item_id, item in user_fragments.items() if item.category == category]
+        for item_id in deleted:
+            user_fragments.pop(item_id, None)
+        if not user_fragments:
+            _fragments.pop(user_id, None)
+    return deleted
+
+
 def _ensure_postgres_schema() -> None:
     global _postgres_ready
     if _postgres_ready:
@@ -231,6 +278,9 @@ def _ensure_postgres_schema() -> None:
                   source_type VARCHAR(32) NOT NULL,
                   source_id VARCHAR(256) NOT NULL DEFAULT '',
                   source_ref TEXT NOT NULL DEFAULT '',
+                  source_message_id VARCHAR(128),
+                  source_chunk_id VARCHAR(256),
+                  source_created_at TIMESTAMPTZ,
                   source_text TEXT NOT NULL,
                   normalized_text TEXT NOT NULL,
                   category VARCHAR(128) NOT NULL,
@@ -266,13 +316,16 @@ def _fragment_from_row(row: tuple) -> MemoryFragment:
         source_type=row[3],
         source_id=row[4] or "",
         source_ref=row[5] or "",
-        source_text=row[6],
-        normalized_text=row[7],
-        category=row[8],
-        confidence=float(row[9] or 0.8),
-        status=row[10] or "active",
-        created_at=float(row[11]),
-        updated_at=float(row[12]),
+        source_message_id=row[6],
+        source_chunk_id=row[7],
+        source_created_at=float(row[8]) if row[8] is not None else None,
+        source_text=row[9],
+        normalized_text=row[10],
+        category=row[11],
+        confidence=float(row[12] or 0.8),
+        status=row[13] or "active",
+        created_at=float(row[14]),
+        updated_at=float(row[15]),
     )
 
 
@@ -283,6 +336,9 @@ def _fragment_to_api(fragment: MemoryFragment) -> dict[str, object]:
     item["sourceType"] = item.pop("source_type")
     item["sourceId"] = item.pop("source_id")
     item["sourceRef"] = item.pop("source_ref")
+    item["sourceMessageId"] = item.pop("source_message_id")
+    item["sourceChunkId"] = item.pop("source_chunk_id")
+    item["sourceCreatedAt"] = item.pop("source_created_at")
     item["sourceText"] = item.pop("source_text")
     item["normalizedText"] = item.pop("normalized_text")
     item["createdAt"] = item.pop("created_at")

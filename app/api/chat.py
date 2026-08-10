@@ -51,6 +51,7 @@ def write_memory_in_background(
     ai_config: dict[str, str] | None = None,
     structured_candidates_prepared: bool = False,
     usage_context: ModelCallContext | None = None,
+    source_message_id: str | None = None,
 ) -> None:
     """在 HTTP 响应返回后执行记忆写入（结构化抽取 / 摘要压缩 / 向量写入），不阻塞用户。"""
     started = perf_counter()
@@ -64,6 +65,7 @@ def write_memory_in_background(
                 question,
                 answer,
                 extract_candidates=not structured_candidates_prepared,
+                source_message_id=source_message_id,
             )
         logger.info(
             "Background memory write done. user_id=%s conversation_id=%s elapsed=%.3fs candidate_memories=%s",
@@ -131,6 +133,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         request.conversation_id,
         request.message,
         request.ai_config,
+        request.source_message_id,
     )
     answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
     background_tasks.add_task(
@@ -142,6 +145,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         request.ai_config,
         True,
         usage_context,
+        request.source_message_id,
     )
     agent_trace = [
         *(result.get("agent_trace") or []),
@@ -161,6 +165,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         })
     project_candidates = extract_project_candidates(request.message, project_context)
     plan_candidate = build_plan_candidate(request.message, project_context)
+    memory_usage = _memory_usage_payload(
+        result.get("memory") if isinstance(result.get("memory"), dict) else {},
+        included=not _has_successful_tool(tool_results, "work_summary"),
+    )
     return ChatResponse(
         answer=answer,
         sources=[
@@ -196,6 +204,9 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         executionSuggestions=build_execution_suggestions(request.user_id, request.message),
         projectContext=project_context,
         review=result.get("review") or {},
+        usedMemories=memory_usage["usedMemories"],
+        memoryExclusions=memory_usage["memoryExclusions"],
+        memoryExplanationVersion="v1",
     )
 
 
@@ -354,6 +365,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     request.conversation_id,
                     request.message,
                     request.ai_config,
+                    request.source_message_id,
                 )
                 answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
                 agent_trace.append({
@@ -511,6 +523,11 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         "estimatedCostMicros": usage_totals(usage_context)["estimated_cost_micros"],
                         "measurementSource": usage_totals(usage_context)["measurement_source"],
                     },
+                    **_memory_usage_payload(
+                        state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                        included=not has_work_summary_tool,
+                    ),
+                    "memoryExplanationVersion": "v1",
                 }
                 meta_started = perf_counter()
                 yield _sse("meta", meta)
@@ -545,6 +562,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
             request.ai_config,
             True,
             usage_context,
+            request.source_message_id,
         )
 
     return StreamingResponse(
@@ -798,6 +816,7 @@ def _prepare_candidate_memories_for_response(
     conversation_id: str | None,
     question: str,
     ai_config: dict[str, str] | None,
+    source_message_id: str | None = None,
 ) -> list[dict[str, object]]:
     """Persist pending structured candidates before response metadata is emitted.
 
@@ -813,6 +832,7 @@ def _prepare_candidate_memories_for_response(
                     conversation_id,
                     question,
                     extraction_mode="rule",
+                    source_message_id=source_message_id,
                 )
                 # Deterministic rules are the reliable first line. The model remains a
                 # fallback for explicit facts that are outside the known rule schema.
@@ -822,12 +842,14 @@ def _prepare_candidate_memories_for_response(
                         conversation_id,
                         question,
                         extraction_mode="llm",
+                        source_message_id=source_message_id,
                     )
             else:
                 candidates = extract_structured_memory(
                     user_id,
                     conversation_id,
                     question,
+                    source_message_id=source_message_id,
                 )
         logger.info(
             "Candidate memories prepared for response. user_id=%s conversation_id=%s count=%s",
@@ -907,6 +929,24 @@ def _has_successful_tool(tool_results: list[dict[str, object]], tool_name: str) 
         isinstance(item, dict) and item.get("tool") == tool_name and item.get("ok")
         for item in tool_results
     )
+
+
+def _memory_usage_payload(memory: dict[str, object], *, included: bool) -> dict[str, object]:
+    if not settings.memory_usage_explanation_enabled or not included:
+        return {
+            "usedMemories": [],
+            "memoryExclusions": {"conflicted": 0, "sensitive": 0, "governed": 0},
+        }
+    profile_context = memory.get("profile_context") if isinstance(memory.get("profile_context"), dict) else {}
+    used = profile_context.get("usedMemories") if isinstance(profile_context.get("usedMemories"), list) else []
+    exclusions = (
+        profile_context.get("memoryExclusions")
+        if isinstance(profile_context.get("memoryExclusions"), dict)
+        else {"conflicted": 0, "sensitive": 0, "governed": 0}
+    )
+    # This payload is built from the same selected profile list that formats the
+    # prompt context; the answer model is never asked to reconstruct it.
+    return {"usedMemories": used, "memoryExclusions": exclusions}
 
 
 def _review_blocked_answer(review: dict[str, object]) -> str:

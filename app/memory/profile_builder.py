@@ -26,6 +26,7 @@ def build_profile_from_structured_memory(
         source_type=_source_type_from_ref(source_ref),
         source_id=_source_id_from_ref(source_ref),
         source_ref=source_ref,
+        source_message_id=_source_message_id_from_ref(source_ref),
         confidence=confidence,
         status="active",
     )
@@ -55,6 +56,10 @@ def build_profile_from_structured_memory(
         )
         if action == "upsert_profile":
             profile = synthesize_profile_summary(user_id, profile)
+        elif action == "conflict":
+            from app.memory.governance import create_memory_conflict
+
+            create_memory_conflict(user_id, schema_path, int(fragment["id"]))
     return {
         "action": action,
         "schemaPath": schema_path,
@@ -97,15 +102,25 @@ def _relation_for_profile(existing: dict[str, object] | None, value: str) -> str
     if not existing:
         return "support"
     existing_value = str(existing.get("value") or "")
-    if not existing_value or value in existing_value or existing_value in value:
+    if not existing_value:
         return "support"
-    return "correction" if int(existing.get("correctionCount") or 0) > 0 else "support"
+    normalized_existing = _normalized_comparison(existing_value)
+    normalized_candidate = _normalized_comparison(value)
+    if normalized_existing == normalized_candidate:
+        return "duplicate"
+    if is_multi_value_path(str(existing.get("schemaPath") or "")):
+        existing_items = set(_split_items(existing_value))
+        candidate_items = set(_split_items(value))
+        return "duplicate" if candidate_items and candidate_items.issubset(existing_items) else "supplement"
+    if normalized_candidate in normalized_existing or normalized_existing in normalized_candidate:
+        return "support"
+    return "contradict"
 
 
 def _evidence_values(evidence: list[dict[str, object]]) -> list[str]:
     values: list[str] = []
     for item in reversed(evidence):
-        if item.get("relation") != "support":
+        if item.get("relation") not in {"support", "supplement", "duplicate"}:
             continue
         fragment = item.get("fragment") if isinstance(item.get("fragment"), dict) else {}
         values.extend(_split_items(str(fragment.get("normalizedText") or "")))
@@ -114,6 +129,10 @@ def _evidence_values(evidence: list[dict[str, object]]) -> list[str]:
 
 def _split_items(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[、,，;；/和与]+", value or "") if item.strip()]
+
+
+def _normalized_comparison(value: str) -> str:
+    return re.sub(r"[\s，。,.!！?？：:、\"'“”‘’（）()\[\]【】]", "", value or "").lower()
 
 
 def _dedupe_values(values: list[str]) -> list[str]:
@@ -154,7 +173,15 @@ def _synthesize_summary(schema_path: str, values: list[str]) -> str:
 
 
 def _conversation_id_from_ref(source_ref: str) -> str | None:
-    return source_ref.removeprefix("conversation:") if source_ref.startswith("conversation:") else None
+    if not source_ref.startswith("conversation:"):
+        return None
+    return source_ref.removeprefix("conversation:").split(";message:", 1)[0] or None
+
+
+def _source_message_id_from_ref(source_ref: str) -> str | None:
+    if ";message:" not in source_ref:
+        return None
+    return source_ref.split(";message:", 1)[1] or None
 
 
 def _source_type_from_ref(source_ref: str) -> str:
@@ -168,4 +195,4 @@ def _source_type_from_ref(source_ref: str) -> str:
 def _source_id_from_ref(source_ref: str) -> str:
     if ":" not in source_ref:
         return source_ref
-    return source_ref.split(":", 1)[1]
+    return source_ref.split(":", 1)[1].split(";message:", 1)[0]

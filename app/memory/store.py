@@ -124,6 +124,12 @@ def recall_memory(
         "profile_context": profile_context,
         "profiles": profile_context.get("profiles") or [],
         "fragments": profile_context.get("fragments") or [],
+        "used_memories": profile_context.get("usedMemories") or [],
+        "memory_exclusions": profile_context.get("memoryExclusions") or {
+            "conflicted": 0,
+            "sensitive": 0,
+            "governed": 0,
+        },
         "recalled_refs": recalled_refs,
         "governance": _memory_governance_snapshot(user_id),
         "short_term": [asdict(item) for item in short],
@@ -141,11 +147,17 @@ def remember_interaction(
     answer: str,
     *,
     extract_candidates: bool = True,
+    source_message_id: str | None = None,
 ) -> dict[str, object]:
     add_turn(user_id, conversation_id, "user", question)
     add_turn(user_id, conversation_id, "assistant", answer)
     compress_memory(user_id, conversation_id)
-    candidate_memories = extract_structured_memory(user_id, conversation_id, question) if extract_candidates else []
+    candidate_memories = extract_structured_memory(
+        user_id,
+        conversation_id,
+        question,
+        source_message_id=source_message_id,
+    ) if extract_candidates else []
     text = _build_vector_memory_text(user_id, question)
     should_write, reason = _should_write_vector_memory(question, text)
     vector_memory_write: dict[str, object] = {
@@ -231,6 +243,7 @@ def extract_structured_memory(
     text: str,
     *,
     extraction_mode: str | None = None,
+    source_message_id: str | None = None,
 ) -> list[dict[str, object]]:
     _apply_structured_memory_denials(user_id, text)
     candidates = _extract_structured_candidates(
@@ -249,7 +262,7 @@ def extract_structured_memory(
             user_id,
             candidate_key,
             value,
-            source=_format_structured_memory_source(conversation_id, text),
+            source=_format_structured_memory_source(conversation_id, text, source_message_id),
             confidence=confidence,
             status="pending",
         )
@@ -490,18 +503,23 @@ def _format_structured_context_fact(item: dict[str, object]) -> str:
     return f"{key}={value}"
 
 
-def _format_structured_memory_source(conversation_id: str | None, text: str) -> str:
-    ref = _structured_memory_source_ref(conversation_id)
+def _format_structured_memory_source(
+    conversation_id: str | None,
+    text: str,
+    source_message_id: str | None = None,
+) -> str:
+    ref = _structured_memory_source_ref(conversation_id, source_message_id)
     cleaned = text[:240]
     return f"source_ref:{ref}\n{cleaned}" if ref else cleaned
 
 
-def _structured_memory_source_ref(conversation_id: str | None) -> str:
+def _structured_memory_source_ref(conversation_id: str | None, source_message_id: str | None = None) -> str:
     if not conversation_id:
         return ""
     if conversation_id.startswith("knowledge:"):
         return conversation_id
-    return f"conversation:{conversation_id}"
+    message_anchor = f";message:{source_message_id}" if source_message_id else ""
+    return f"conversation:{conversation_id}{message_anchor}"
 
 
 def _find_duplicate_vector_memory(user_id: str, text: str) -> dict[str, object] | None:
