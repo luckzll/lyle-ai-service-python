@@ -31,7 +31,7 @@ async def internal_token_middleware(request: Request, call_next) -> Response:
             content={
                 "detail": (
                     "INTERNAL_API_TOKEN 未配置为安全值，服务拒绝处理请求。"
-                    "请在 .env 中设置强随机 token（例如 openssl rand -hex 32），"
+                    "请在 deploy/.env 中设置强随机 token（例如 openssl rand -hex 32），"
                     "并同步配置 Java 侧 AI_SERVICE_INTERNAL_TOKEN。"
                 )
             },

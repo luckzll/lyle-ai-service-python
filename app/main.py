@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     if internal_token_is_insecure():
         logger.error(
             "INTERNAL_API_TOKEN 未配置为安全值（为空或占位值），所有 /ai/* 请求将返回 503。"
-            "请在 .env 中设置强随机 token。"
+            "请在 deploy/.env 中设置强随机 token。"
         )
     try:
         embedding_status = await asyncio.to_thread(warm_up_embedding_model)

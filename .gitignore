@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+deploy/.env
+!deploy/.env.example
 LLM_API_KEYS_AND_MODELS.private.txt
 
 .venv/

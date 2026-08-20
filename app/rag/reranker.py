@@ -49,7 +49,7 @@ def get_reranker_status() -> dict[str, object]:
         status["ready"] = False
         status["message"] = (
             "FlagEmbedding is not installed. "
-            "Install with: python -m pip install -r requirements-reranker.txt"
+            "Install with: python -m pip install -r requirements/optional/reranker.txt"
         )
         status["error"] = str(exc)
     return status

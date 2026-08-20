@@ -1,12 +1,18 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_ENV_FILE = _PROJECT_ROOT / "deploy" / ".env"
+
+
 class Settings(BaseSettings):
-    # 从 ai-service-python/.env 读取环境变量；没有配置时使用下面的默认值。
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    # 从 ai-service-python/deploy/.env 读取环境变量；没有配置时使用下面的默认值。
+    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
 
     # ===== 大模型基础配置 =====
-    # DeepSeek API Key 从 .env 注入，不要写死在代码里。
+    # DeepSeek API Key 从 deploy/.env 注入，不要写死在代码里。
     deepseek_api_key: str = ""
     # DeepSeek OpenAI-compatible 接口地址。
     deepseek_base_url: str = "https://api.deepseek.com"
@@ -145,7 +151,7 @@ class Settings(BaseSettings):
     # Prompt 版本号，方便后续灰度、评测和排查。
     prompt_version: str = "lyle-agent-v1"
     # Java 调 Python 时携带的内部 token，防止外部绕过 Java 直接访问 Python。
-    # 必须在 .env 中显式配置强随机值（如 openssl rand -hex 32）；为空或占位值时服务会拒绝所有请求。
+    # 必须在 deploy/.env 中显式配置强随机值（如 openssl rand -hex 32）；为空或占位值时服务会拒绝所有请求。
     internal_api_token: str = ""
     # Python 服务日志级别。
     log_level: str = "INFO"

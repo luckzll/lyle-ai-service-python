@@ -342,7 +342,7 @@ uvicorn==0.34.0
     #   -r requirements.txt
     #   mcp
     #   sse-starlette
-uvloop==0.22.1
+uvloop==0.22.1 ; sys_platform != "win32"
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn

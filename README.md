@@ -16,6 +16,11 @@ app/
   embedding/ # 向量生成
   workers/   # 文档入库任务
   schemas/   # 请求响应模型
+alembic/                # 数据库迁移
+deploy/                 # Dockerfile、环境配置与容器启动脚本
+docs/releases/          # 版本发布说明
+requirements/optional/  # 可选功能依赖
+tests/                  # 自动化测试
 ```
 
 ## 当前接口
@@ -117,10 +122,10 @@ event: done
 默认 `RERANK_PROVIDER=lexical`，不需要额外模型。要启用真正的 bge-reranker：
 
 ```bash
-/Users/luckzll/Desktop/Lyle/ai-app/ai-service-python/.venv312/bin/python -m pip install -r requirements-reranker.txt
+/Users/luckzll/Desktop/Lyle/ai-app/ai-service-python/.venv312/bin/python -m pip install -r requirements/optional/reranker.txt
 ```
 
-然后修改 `.env`：
+然后修改 `deploy/.env`：
 
 ```env
 RERANK_ENABLED=true
