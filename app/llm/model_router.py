@@ -3,6 +3,7 @@ from functools import lru_cache
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
+from app.core.runtime_config import current_chat_model_override
 from app.llm.providers.base import ChatModelConfig, OpenAICompatibleProvider
 from app.llm.providers.deepseek import DeepSeekProvider
 from app.llm.providers.local_ollama import LocalOllamaProvider
@@ -64,6 +65,10 @@ def get_model_config(task: str) -> ChatModelConfig:
 
 
 def _task_provider(task: str) -> str:
+    if task == TASK_CHAT:
+        override = current_chat_model_override()
+        if override is not None:
+            return override[0]
     defaults = {
         TASK_CHAT: settings.chat_model_provider,
         TASK_INTENT: settings.intent_model_provider,
@@ -75,6 +80,10 @@ def _task_provider(task: str) -> str:
 
 
 def _task_model(task: str) -> str:
+    if task == TASK_CHAT:
+        override = current_chat_model_override()
+        if override is not None:
+            return override[1]
     defaults = {
         TASK_CHAT: settings.chat_model_name,
         TASK_INTENT: settings.intent_model_name,

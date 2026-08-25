@@ -1,10 +1,24 @@
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Iterator
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+ALLOWED_CHAT_MODELS = {
+    ("qwen", "qwen3.5-flash"),
+    ("openai", "openai/gpt-5.4"),
+    ("openai", "openai/gpt-5.5"),
+    ("openai", "anthropic/claude-sonnet-4.6"),
+    ("openai", "google/gemini-3.1-pro-preview"),
+}
+
+_chat_model_override: ContextVar[tuple[str, str] | None] = ContextVar(
+    "lyle_chat_model_override",
+    default=None,
+)
 
 # 允许通过请求 aiConfig 临时覆盖的配置：仅限模型行为 / RAG 质量 / 数值上限类字段。
 CONFIG_FIELD_MAP = {
@@ -52,21 +66,44 @@ def temporary_ai_config(config: dict[str, str] | None) -> Iterator[None]:
         return
 
     old_values: dict[str, object] = {}
-    for key, value in config.items():
-        if key in BLOCKED_CONFIG_KEYS:
-            logger.warning("Ignoring security-sensitive aiConfig key: %s", key)
-            continue
-        field = CONFIG_FIELD_MAP.get(key)
-        if not field or not hasattr(settings, field):
-            continue
-        old_values[field] = getattr(settings, field)
-        setattr(settings, field, _coerce_value(value, old_values[field]))
-
+    model_token = None
     try:
+        model_override = _validated_chat_model_override(config)
+        if model_override is not None:
+            model_token = _chat_model_override.set(model_override)
+
+        for key, value in config.items():
+            if key in BLOCKED_CONFIG_KEYS:
+                logger.warning("Ignoring security-sensitive aiConfig key: %s", key)
+                continue
+            field = CONFIG_FIELD_MAP.get(key)
+            if not field or not hasattr(settings, field):
+                continue
+            old_values[field] = getattr(settings, field)
+            setattr(settings, field, _coerce_value(value, old_values[field]))
         yield
     finally:
         for field, value in old_values.items():
             setattr(settings, field, value)
+        if model_token is not None:
+            _chat_model_override.reset(model_token)
+
+
+def current_chat_model_override() -> tuple[str, str] | None:
+    return _chat_model_override.get()
+
+
+def _validated_chat_model_override(config: dict[str, str]) -> tuple[str, str] | None:
+    provider_value = config.get("CHAT_MODEL_PROVIDER")
+    model_value = config.get("CHAT_MODEL_NAME")
+    if provider_value is None and model_value is None:
+        return None
+    if not provider_value or not model_value:
+        raise ValueError("CHAT_MODEL_PROVIDER and CHAT_MODEL_NAME must be provided together")
+    selected = (provider_value.strip().lower(), model_value.strip())
+    if selected not in ALLOWED_CHAT_MODELS:
+        raise ValueError("Unsupported request chat model")
+    return selected
 
 
 def _coerce_value(value: str, old_value: object) -> object:
