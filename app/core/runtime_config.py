@@ -13,6 +13,7 @@ ALLOWED_CHAT_MODELS = {
     ("qwen", "qwen3.8-max"),
     ("qwen", "deepseek-v4-flash"),
     ("qwen", "deepseek-v4-pro"),
+    ("qwen", "kimi-k3"),
 }
 
 _chat_model_override: ContextVar[tuple[str, str] | None] = ContextVar(

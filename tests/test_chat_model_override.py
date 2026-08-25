@@ -54,9 +54,11 @@ def test_request_chat_model_overrides_are_isolated_between_concurrent_tasks():
         return await asyncio.gather(
             selected("qwen", "qwen3.7-flash"),
             selected("qwen", "deepseek-v4-pro"),
+            selected("qwen", "kimi-k3"),
         )
 
     assert asyncio.run(run()) == [
         ("qwen", "qwen3.7-flash"),
         ("qwen", "deepseek-v4-pro"),
+        ("qwen", "kimi-k3"),
     ]
