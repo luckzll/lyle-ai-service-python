@@ -921,6 +921,8 @@ def _friendly_stream_error(exc: Exception) -> str:
         return "模型服务鉴权失败，请检查后端模型 API Key 配置。"
     if "rate" in lowered or "429" in lowered:
         return "模型服务当前限流了，请稍后再试。"
+    if "network is unreachable" in lowered or "connection error" in lowered or "connecterror" in lowered:
+        return "当前模型暂时无法连接，请切换到 Qwen 模型，或稍后重试。"
     return "模型服务暂时不可用，请稍后重试。"
 
 

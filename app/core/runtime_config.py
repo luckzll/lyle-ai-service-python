@@ -71,6 +71,7 @@ def temporary_ai_config(config: dict[str, str] | None) -> Iterator[None]:
 
     old_values: dict[str, object] = {}
     model_token = None
+    previous_model_override = _chat_model_override.get()
     try:
         model_override = _validated_chat_model_override(config)
         if model_override is not None:
@@ -90,7 +91,14 @@ def temporary_ai_config(config: dict[str, str] | None) -> Iterator[None]:
         for field, value in old_values.items():
             setattr(settings, field, value)
         if model_token is not None:
-            _chat_model_override.reset(model_token)
+            try:
+                _chat_model_override.reset(model_token)
+            except ValueError:
+                # Starlette may advance a synchronous streaming generator in a
+                # copied worker context. A ContextVar token can only be reset in
+                # the exact context that created it, so restore the prior value
+                # explicitly when the response crosses that boundary.
+                _chat_model_override.set(previous_model_override)
 
 
 def current_chat_model_override() -> tuple[str, str] | None:

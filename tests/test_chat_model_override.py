@@ -1,4 +1,5 @@
 import asyncio
+from contextvars import Context, copy_context
 
 import pytest
 
@@ -66,3 +67,20 @@ def test_request_chat_model_overrides_are_isolated_between_concurrent_tasks():
         ("openai", "google/gemini-3.5-flash"),
         ("qwen", "kimi-k3"),
     ]
+
+
+def test_request_chat_model_override_restores_when_stream_crosses_contexts():
+    def enter_and_exit_from_copied_context() -> None:
+        manager = temporary_ai_config({
+            "CHAT_MODEL_PROVIDER": "openai",
+            "CHAT_MODEL_NAME": "openai/gpt-5.5",
+        })
+        manager.__enter__()
+        assert current_chat_model_override() == ("openai", "openai/gpt-5.5")
+
+        exit_context = copy_context()
+        exit_context.run(manager.__exit__, None, None, None)
+        assert exit_context.run(current_chat_model_override) is None
+
+    Context().run(enter_and_exit_from_copied_context)
+    assert current_chat_model_override() is None
