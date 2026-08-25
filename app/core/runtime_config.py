@@ -8,11 +8,11 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 ALLOWED_CHAT_MODELS = {
-    ("qwen", "qwen3.5-flash"),
-    ("openai", "openai/gpt-5.4"),
-    ("openai", "openai/gpt-5.5"),
-    ("openai", "anthropic/claude-sonnet-4.6"),
-    ("openai", "google/gemini-3.1-pro-preview"),
+    ("qwen", "qwen3.7-flash"),
+    ("qwen", "qwen3.7-plus"),
+    ("qwen", "qwen3.8-max"),
+    ("qwen", "deepseek-v4-flash"),
+    ("qwen", "deepseek-v4-pro"),
 }
 
 _chat_model_override: ContextVar[tuple[str, str] | None] = ContextVar(

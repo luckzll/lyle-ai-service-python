@@ -14,12 +14,12 @@ def test_request_chat_model_override_only_changes_chat_task(monkeypatch):
     monkeypatch.setattr(settings, "intent_model_name", "qwen-flash")
 
     with temporary_ai_config({
-        "CHAT_MODEL_PROVIDER": "openai",
-        "CHAT_MODEL_NAME": "openai/gpt-5.5",
+        "CHAT_MODEL_PROVIDER": "qwen",
+        "CHAT_MODEL_NAME": "deepseek-v4-pro",
     }):
         chat = get_model_config(TASK_CHAT)
         intent = get_model_config(TASK_INTENT)
-        assert (chat.provider, chat.model) == ("openai", "openai/gpt-5.5")
+        assert (chat.provider, chat.model) == ("qwen", "deepseek-v4-pro")
         assert (intent.provider, intent.model) == ("qwen", "qwen-flash")
 
     assert current_chat_model_override() is None
@@ -29,7 +29,7 @@ def test_request_chat_model_override_only_changes_chat_task(monkeypatch):
 
 def test_request_chat_model_override_rejects_incomplete_or_unknown_routes():
     with pytest.raises(ValueError, match="provided together"):
-        with temporary_ai_config({"CHAT_MODEL_NAME": "openai/gpt-5.5"}):
+        with temporary_ai_config({"CHAT_MODEL_NAME": "deepseek-v4-pro"}):
             pass
 
     with pytest.raises(ValueError, match="Unsupported request chat model"):
@@ -52,11 +52,11 @@ def test_request_chat_model_overrides_are_isolated_between_concurrent_tasks():
 
     async def run() -> list[tuple[str, str]]:
         return await asyncio.gather(
-            selected("qwen", "qwen3.5-flash"),
-            selected("openai", "anthropic/claude-sonnet-4.6"),
+            selected("qwen", "qwen3.7-flash"),
+            selected("qwen", "deepseek-v4-pro"),
         )
 
     assert asyncio.run(run()) == [
-        ("qwen", "qwen3.5-flash"),
-        ("openai", "anthropic/claude-sonnet-4.6"),
+        ("qwen", "qwen3.7-flash"),
+        ("qwen", "deepseek-v4-pro"),
     ]
