@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_CHAT_MODELS = {
     ("qwen", "qwen3.7-flash"),
+    ("openai", "openai/gpt-5.5"),
+    ("openai", "anthropic/claude-opus-4.6"),
+    ("openai", "google/gemini-3.5-flash"),
     ("qwen", "qwen3.7-plus"),
     ("qwen", "qwen3.8-max"),
     ("qwen", "deepseek-v4-flash"),

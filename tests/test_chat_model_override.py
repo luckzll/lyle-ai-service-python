@@ -53,12 +53,16 @@ def test_request_chat_model_overrides_are_isolated_between_concurrent_tasks():
     async def run() -> list[tuple[str, str]]:
         return await asyncio.gather(
             selected("qwen", "qwen3.7-flash"),
-            selected("qwen", "deepseek-v4-pro"),
+            selected("openai", "openai/gpt-5.5"),
+            selected("openai", "anthropic/claude-opus-4.6"),
+            selected("openai", "google/gemini-3.5-flash"),
             selected("qwen", "kimi-k3"),
         )
 
     assert asyncio.run(run()) == [
         ("qwen", "qwen3.7-flash"),
-        ("qwen", "deepseek-v4-pro"),
+        ("openai", "openai/gpt-5.5"),
+        ("openai", "anthropic/claude-opus-4.6"),
+        ("openai", "google/gemini-3.5-flash"),
         ("qwen", "kimi-k3"),
     ]
