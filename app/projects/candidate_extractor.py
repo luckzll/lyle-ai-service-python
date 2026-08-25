@@ -20,7 +20,7 @@ def extract_project_candidates(message: str, project_context: dict[str, Any]) ->
 def _goal_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
     if _is_plan_request_without_goal_write(text):
         return []
-    if not any(keyword in text for keyword in ["目标", "这周", "本周", "本月", "希望", "想把", "计划", "完成"]):
+    if not _has_goal_creation_intent(text):
         return []
     title = _goal_title(text)
     if len(title) < 4:
@@ -39,6 +39,13 @@ def _goal_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
 
 
 def _is_plan_request_without_goal_write(text: str) -> bool:
+    if _has_explicit_goal_write_intent(text):
+        return False
+    plan_markers = ["拆计划", "拆一个", "拆解", "分解", "推进计划", "三步计划", "三步推进"]
+    return "目标" in text and any(marker in text for marker in plan_markers)
+
+
+def _has_explicit_goal_write_intent(text: str) -> bool:
     goal_write_markers = [
         "新增一个目标",
         "新增目标",
@@ -51,10 +58,18 @@ def _is_plan_request_without_goal_write(text: str) -> bool:
         "目标：",
         "目标:",
     ]
-    if any(marker in text for marker in goal_write_markers):
-        return False
-    plan_markers = ["拆计划", "拆一个", "拆解", "分解", "推进计划", "三步计划", "三步推进"]
-    return "目标" in text and any(marker in text for marker in plan_markers)
+    return any(marker in text for marker in goal_write_markers)
+
+
+def _has_goal_creation_intent(text: str) -> bool:
+    if _has_explicit_goal_write_intent(text):
+        return True
+    commitment_patterns = [
+        r"(?:我的|我们的)?目标(?:是|为)[：:\s]*(?!什么|哪些|啥|否|不是|如何)",
+        r"(?:这周|本周|本月)(?:我|我们)?(?:要|准备|打算|计划|希望)",
+        r"(?:我|我们)(?:希望|想要|想把|准备|打算|计划)",
+    ]
+    return any(re.search(pattern, text) for pattern in commitment_patterns)
 
 
 def _decision_candidates(text: str, project_id: int) -> list[dict[str, Any]]:
@@ -108,7 +123,7 @@ def _goal_title(text: str) -> str:
     patterns = [
         r"(?:新增|添加|创建|记录)(?:一个)?目标[：:]\s*([^。！？!?，,]+)",
         r"目标[：:]\s*([^。！？!?，,]+)",
-        r"(?:我的目标是|目标是|这周要|本周要|本月要|我希望|我想把)([^。！？!?，,]+)",
+        r"(?:我的目标是|我们的目标是|目标是|这周(?:我|我们)?要|本周(?:我|我们)?要|本月(?:我|我们)?要|我希望|我们希望|我想把|我们想把)([^。！？!?，,]+)",
     ]
     for pattern in patterns:
         match = re.search(pattern, text)

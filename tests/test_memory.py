@@ -1,6 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 
+import redis
+
 from app.core.config import settings
 from app.memory import store as memory_store
 from app.memory import profile_store
@@ -43,6 +45,28 @@ def test_memory_uses_in_memory_fallback(monkeypatch):
 
     assert len(memory["short_term"]) == 2
     assert memory["structured"] == []
+    assert_candidate(result, "food_preference", "西瓜")
+
+
+def test_memory_falls_back_when_redis_is_unavailable(monkeypatch):
+    class UnavailableRedis:
+        def __getattr__(self, _name):
+            def unavailable(*_args, **_kwargs):
+                raise redis.ConnectionError("redis is unavailable")
+
+            return unavailable
+
+    monkeypatch.setattr(settings, "redis_enabled", True)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "rule")
+    monkeypatch.setattr(memory_store, "_redis_client", lambda: UnavailableRedis())
+
+    result = remember_interaction("redis-fallback-user", "conversation", "我喜欢西瓜", "记住了")
+    memory = export_memory("redis-fallback-user", "conversation")
+
+    assert len(memory["short_term"]) == 2
     assert_candidate(result, "food_preference", "西瓜")
 
 

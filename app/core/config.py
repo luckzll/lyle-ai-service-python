@@ -5,11 +5,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _ENV_FILE = _PROJECT_ROOT / "deploy" / ".env"
+_LOCAL_ENV_FILE = _PROJECT_ROOT / "deploy" / ".env.local"
 
 
 class Settings(BaseSettings):
     # 从 ai-service-python/deploy/.env 读取环境变量；没有配置时使用下面的默认值。
-    model_config = SettingsConfigDict(env_file=_ENV_FILE, env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=(_ENV_FILE, _LOCAL_ENV_FILE),
+        env_file_encoding="utf-8",
+    )
 
     # ===== 大模型基础配置 =====
     # DeepSeek API Key 从 deploy/.env 注入，不要写死在代码里。
@@ -201,6 +205,7 @@ class Settings(BaseSettings):
     # qdrant_memory_collection：语义记忆集合。
     qdrant_enabled: bool = False
     qdrant_endpoint: str = "http://localhost:6333"
+    qdrant_api_key: str = ""
     qdrant_collection: str = "lyle_knowledge"
     qdrant_memory_collection: str = "lyle_semantic_memory"
 

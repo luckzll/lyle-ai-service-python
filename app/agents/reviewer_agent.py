@@ -471,6 +471,7 @@ def _question_requests_project_goal_write(question: str) -> bool:
 
 
 def _answer_claims_goal_recorded(answer: str) -> bool:
+    answer = _without_unexecuted_goal_write_copy(answer)
     write_markers = [
         "已经直接记录",
         "已直接记录",
@@ -500,6 +501,18 @@ def _answer_claims_goal_recorded(answer: str) -> bool:
     if any(marker in answer for marker in write_markers):
         return True
     return bool(re.search(r"(?:已|已经|直接).{0,12}(?:记录|挂到|写入|创建).{0,16}项目", answer))
+
+
+def _without_unexecuted_goal_write_copy(answer: str) -> str:
+    safe_patterns = [
+        r"(?:确认|同意|批准|审核)(?:后|之后|通过后).{0,8}(?:才会|才能|方可|再)(?:被)?(?:记录|写入|创建|新增|挂到|安排)(?:到|进|至)?(?:项目)?",
+        r"(?:确认|同意|批准|审核)(?:前|之前).{0,8}(?:不会|不能|不得|尚未|还未|未)(?:被)?(?:记录|写入|创建|新增|挂到|安排)(?:到|进|至)?(?:项目)?",
+        r"(?:尚未|还没有|还未|未|没有|不会|不能|不得).{0,6}(?:直接)?(?:记录|写入|创建|新增|挂到|安排)(?:到|进|至)?(?:项目)?",
+    ]
+    result = answer
+    for pattern in safe_patterns:
+        result = re.sub(pattern, "", result)
+    return result
 
 
 def _answer_self_confirms_pending_operation(answer: str) -> bool:

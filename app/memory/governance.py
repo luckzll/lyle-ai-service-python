@@ -15,6 +15,7 @@ import httpx
 
 from app.core.config import settings
 from app.core.database import postgres_connection
+from app.core.qdrant import qdrant_headers
 from app.memory.evidence_store import (
     create_profile_evidence,
     delete_profile_evidence,
@@ -1249,7 +1250,10 @@ def _purge_user_vectors(user_id: str) -> None:
     # Semantic turns are not keyed by profile. Privacy correctness therefore
     # takes precedence over retention and clears this user's derived vector cache.
     if settings.qdrant_enabled:
-        with httpx.Client(timeout=max(1.0, settings.vector_backend_timeout_seconds)) as client:
+        with httpx.Client(
+            timeout=max(1.0, settings.vector_backend_timeout_seconds),
+            headers=qdrant_headers(),
+        ) as client:
             client.post(
                 f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_memory_collection}/points/delete",
                 params={"wait": "true"},

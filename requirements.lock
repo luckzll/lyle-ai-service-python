@@ -53,6 +53,8 @@ distro==1.9.0
     #   openai
 et-xmlfile==2.0.0
     # via openpyxl
+faiss-cpu==1.15.0
+    # via milvus-lite
 fastapi==0.115.6
     # via -r requirements.txt
 fastembed==0.7.3
@@ -64,7 +66,9 @@ flatbuffers==25.12.19
 fsspec==2026.6.0
     # via huggingface-hub
 grpcio==1.82.1
-    # via pymilvus
+    # via
+    #   milvus-lite
+    #   pymilvus
 h11==0.16.0
     # via
     #   httpcore
@@ -147,11 +151,15 @@ mcp==1.28.1
     # via -r requirements.txt
 minio==7.2.18
     # via -r requirements.txt
+milvus-lite==3.2.0
+    # via -r requirements.txt
 mmh3==5.2.1
     # via fastembed
 numpy==2.5.1
     # via
+    #   faiss-cpu
     #   fastembed
+    #   milvus-lite
     #   onnxruntime
     #   pandas
 onnxruntime==1.27.0
@@ -169,6 +177,7 @@ ormsgpack==1.12.2
     # via langgraph-checkpoint
 packaging==26.2
     # via
+    #   faiss-cpu
     #   huggingface-hub
     #   langchain-core
     #   langsmith
@@ -196,6 +205,8 @@ psycopg-pool==3.3.1
     # via psycopg
 py-rust-stemmers==0.1.8
     # via fastembed
+pyarrow==25.0.1
+    # via milvus-lite
 pycparser==3.0
     # via cffi
 pycryptodome==3.23.0

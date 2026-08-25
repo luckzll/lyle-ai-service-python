@@ -41,3 +41,31 @@ def test_plan_request_does_not_create_extra_goal_candidate():
     )
 
     assert result["candidateGoals"] == []
+
+
+def test_project_status_analysis_does_not_create_goal_candidate():
+    result = extract_project_candidates(
+        "帮我基于「优化出海资料」当前目标、任务和风险，明确最值得推进的下一步。",
+        {"resolver": {"projectId": 9, "requiresClarification": False}},
+    )
+
+    assert result["candidateGoals"] == []
+
+
+def test_current_project_goal_question_does_not_create_goal_candidate():
+    result = extract_project_candidates(
+        "这个项目当前目标是什么？",
+        {"resolver": {"projectId": 9, "requiresClarification": False}},
+    )
+
+    assert result["candidateGoals"] == []
+
+
+def test_goal_commitment_still_creates_goal_candidate():
+    result = extract_project_candidates(
+        "这周我要完成 V3 方案。",
+        {"resolver": {"projectId": 9, "requiresClarification": False}},
+    )
+
+    assert result["candidateGoals"][0]["title"] == "完成 V3 方案"
+    assert result["candidateGoals"][0]["horizon"] == "week"

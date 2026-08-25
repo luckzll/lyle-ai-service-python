@@ -10,6 +10,7 @@ from uuid import NAMESPACE_URL, uuid5
 import httpx
 
 from app.core.config import settings
+from app.core.qdrant import qdrant_headers
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
 from app.rag.document_loader import StorageObjectRef, load_document_text, split_text_with_metadata
 from app.rag.reranker import rerank_items
@@ -463,7 +464,7 @@ def _qdrant_upsert(item: KnowledgeChunk, chunk_index: int) -> None:
             }
         ]
     }
-    with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+    with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
         client.put(
             f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_collection}/points",
             params={"wait": "true"},
@@ -496,7 +497,7 @@ def _qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int) -> 
         },
     }
     try:
-        with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+        with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
             response = client.post(
                 f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_collection}/points/search",
                 json=body,
@@ -527,7 +528,7 @@ def _qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int) -> 
 
 
 def _ensure_qdrant_collection() -> None:
-    with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+    with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
         response = client.get(
             f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_collection}"
         )

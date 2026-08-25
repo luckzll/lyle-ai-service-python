@@ -13,6 +13,7 @@ import redis
 
 from app.core.config import settings
 from app.core.database import postgres_connection
+from app.core.qdrant import qdrant_headers
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
 from app.chains.structured_memory_chain import invoke_structured_memory_chain
 from app.llm.client import summarize_memory
@@ -77,12 +78,16 @@ def add_turn(user_id: str, conversation_id: str | None, role: str, content: str)
     key = _conversation_key(user_id, conversation_id)
     turn = MemoryTurn(role=role, content=_sanitize_memory_content(content), created_at=time())
     if settings.redis_enabled:
-        client = _redis_client()
-        client.rpush(_short_term_key(key), json.dumps(asdict(turn), ensure_ascii=False))
-        client.ltrim(_short_term_key(key), -_short_term_buffer_limit(), -1)
-    else:
-        with _lock:
-            _short_term[key].append(turn)
+        try:
+            client = _redis_client()
+            client.rpush(_short_term_key(key), json.dumps(asdict(turn), ensure_ascii=False))
+            client.ltrim(_short_term_key(key), -_short_term_buffer_limit(), -1)
+            return
+        except redis.RedisError as exception:
+            _log_redis_fallback("append", exception)
+
+    with _lock:
+        _short_term[key].append(turn)
 
 
 def recall_memory(
@@ -908,8 +913,11 @@ def _structured_group_key(key: str) -> str:
 def _load_short_term(user_id: str, conversation_id: str | None) -> list[MemoryTurn]:
     key = _conversation_key(user_id, conversation_id)
     if settings.redis_enabled:
-        items = _redis_client().lrange(_short_term_key(key), 0, -1)
-        return [MemoryTurn(**json.loads(item)) for item in items]
+        try:
+            items = _redis_client().lrange(_short_term_key(key), 0, -1)
+            return [MemoryTurn(**json.loads(item)) for item in items]
+        except redis.RedisError as exception:
+            _log_redis_fallback("load", exception)
 
     with _lock:
         return list(_short_term.get(key, []))
@@ -918,12 +926,15 @@ def _load_short_term(user_id: str, conversation_id: str | None) -> list[MemoryTu
 def _save_short_term(user_id: str, conversation_id: str | None, turns: list[MemoryTurn]) -> None:
     key = _conversation_key(user_id, conversation_id)
     if settings.redis_enabled:
-        client = _redis_client()
-        redis_key = _short_term_key(key)
-        client.delete(redis_key)
-        if turns:
-            client.rpush(redis_key, *[json.dumps(asdict(item), ensure_ascii=False) for item in turns])
-        return
+        try:
+            client = _redis_client()
+            redis_key = _short_term_key(key)
+            client.delete(redis_key)
+            if turns:
+                client.rpush(redis_key, *[json.dumps(asdict(item), ensure_ascii=False) for item in turns])
+            return
+        except redis.RedisError as exception:
+            _log_redis_fallback("save", exception)
 
     with _lock:
         _short_term[key] = list(turns)
@@ -1238,7 +1249,7 @@ def _upsert_qdrant_memory(user_id: str, conversation_id: str | None, text: str) 
             }
         ]
     }
-    with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+    with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
         client.put(
             f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_memory_collection}/points",
             params={"wait": "true"},
@@ -1262,7 +1273,7 @@ def _search_qdrant_memory(user_id: str, question: str, top_k: int) -> list[dict[
             ]
         },
     }
-    with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+    with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
         response = client.post(
             f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_memory_collection}/points/search",
             json=body,
@@ -1419,7 +1430,7 @@ def _ensure_qdrant_memory_collection() -> None:
     if _qdrant_memory_ready:
         return
 
-    with httpx.Client(timeout=settings.vector_backend_timeout_seconds) as client:
+    with httpx.Client(timeout=settings.vector_backend_timeout_seconds, headers=qdrant_headers()) as client:
         response = client.get(
             f"{settings.qdrant_endpoint.rstrip('/')}/collections/{settings.qdrant_memory_collection}"
         )
@@ -1552,6 +1563,14 @@ def _log_vector_backend_failure(
 
 def _redis_client() -> redis.Redis:
     return redis.Redis.from_url(settings.redis_url, decode_responses=True)
+
+
+def _log_redis_fallback(action: str, exception: redis.RedisError) -> None:
+    logger.warning(
+        "Redis short-term memory unavailable; using process memory. action=%s error=%s",
+        action,
+        exception,
+    )
 
 
 def _milvus_client():
