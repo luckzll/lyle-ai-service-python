@@ -27,6 +27,7 @@ class UserProfile:
 
 
 _lock = Lock()
+_postgres_schema_lock = Lock()
 _profiles: dict[str, dict[str, UserProfile]] = {}
 _next_id = 1
 _postgres_ready = False
@@ -450,36 +451,39 @@ def _ensure_postgres_schema() -> None:
     global _postgres_ready
     if _postgres_ready:
         return
-    with postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS user_profile (
-                  id BIGSERIAL PRIMARY KEY,
-                  user_id VARCHAR(128) NOT NULL,
-                  schema_path VARCHAR(256) NOT NULL,
-                  value TEXT NOT NULL,
-                  summary TEXT NOT NULL DEFAULT '',
-                  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.8,
-                  evidence_confidence DOUBLE PRECISION,
-                  status VARCHAR(32) NOT NULL DEFAULT 'active',
-                  last_used_at TIMESTAMPTZ,
-                  hit_count BIGINT NOT NULL DEFAULT 0,
-                  correction_count BIGINT NOT NULL DEFAULT 0,
-                  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                  UNIQUE(user_id, schema_path)
+    with _postgres_schema_lock:
+        if _postgres_ready:
+            return
+        with postgres_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_profile (
+                      id BIGSERIAL PRIMARY KEY,
+                      user_id VARCHAR(128) NOT NULL,
+                      schema_path VARCHAR(256) NOT NULL,
+                      value TEXT NOT NULL,
+                      summary TEXT NOT NULL DEFAULT '',
+                      confidence DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+                      evidence_confidence DOUBLE PRECISION,
+                      status VARCHAR(32) NOT NULL DEFAULT 'active',
+                      last_used_at TIMESTAMPTZ,
+                      hit_count BIGINT NOT NULL DEFAULT 0,
+                      correction_count BIGINT NOT NULL DEFAULT 0,
+                      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                      UNIQUE(user_id, schema_path)
+                    )
+                    """
                 )
-                """
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS idx_user_profile_user_status "
-                "ON user_profile(user_id, status, updated_at DESC)"
-            )
-            cur.execute("ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS evidence_confidence DOUBLE PRECISION")
-            cur.execute("UPDATE user_profile SET evidence_confidence = confidence WHERE evidence_confidence IS NULL")
-        conn.commit()
-    _postgres_ready = True
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_user_profile_user_status "
+                    "ON user_profile(user_id, status, updated_at DESC)"
+                )
+                cur.execute("ALTER TABLE user_profile ADD COLUMN IF NOT EXISTS evidence_confidence DOUBLE PRECISION")
+                cur.execute("UPDATE user_profile SET evidence_confidence = confidence WHERE evidence_confidence IS NULL")
+            conn.commit()
+        _postgres_ready = True
 
 
 def _merge_profile_value(schema_path: str, existing_value: str, new_value: str) -> str:
