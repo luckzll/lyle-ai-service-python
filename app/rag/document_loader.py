@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import unquote, urlparse
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile
 
 from docx import Document
 from minio import Minio
@@ -14,6 +16,7 @@ TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log"}
 PDF_SUFFIXES = {".pdf"}
 DOCX_SUFFIXES = {".docx"}
 XLSX_SUFFIXES = {".xlsx", ".xlsm"}
+PPTX_SUFFIXES = {".pptx"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
 
 
@@ -58,6 +61,9 @@ def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
 
     if suffix == ".xls":
         return title, _read_xls(path)
+
+    if suffix in PPTX_SUFFIXES:
+        return title, _read_pptx(path)
 
     if suffix in IMAGE_SUFFIXES:
         return title, _read_image_ocr(path)
@@ -290,6 +296,40 @@ def _read_xls(path: Path) -> str:
             if values:
                 lines.append(" | ".join(values))
     return "\n".join(lines) or "XLS 未解析到可用文本。"
+
+
+def _read_pptx(path: Path) -> str:
+    try:
+        with ZipFile(path) as archive:
+            slide_entries = sorted(
+                (
+                    item
+                    for item in archive.infolist()
+                    if item.filename.startswith("ppt/slides/slide") and item.filename.endswith(".xml")
+                ),
+                key=_pptx_slide_number,
+            )
+            slides: list[str] = []
+            for index, entry in enumerate(slide_entries, start=1):
+                if entry.file_size > 8 * 1024 * 1024:
+                    raise ValueError(f"PPTX 第 {index} 页内容过大，无法安全解析。")
+                root = ElementTree.fromstring(archive.read(entry))
+                text_items = [
+                    str(node.text).strip()
+                    for node in root.iter()
+                    if node.tag.endswith("}t") and node.text and str(node.text).strip()
+                ]
+                if text_items:
+                    slides.append(f"第 {index} 页\n" + "\n".join(text_items))
+    except (BadZipFile, ElementTree.ParseError) as exc:
+        raise ValueError("PPTX 文件已损坏或不是有效的 PowerPoint 文件。") from exc
+    return "\n\n".join(slides) or "PPTX 未解析到可用文本。"
+
+
+def _pptx_slide_number(entry) -> int:
+    stem = Path(entry.filename).stem
+    suffix = stem.removeprefix("slide")
+    return int(suffix) if suffix.isdigit() else 0
 
 
 def _read_image_ocr(path: Path) -> str:

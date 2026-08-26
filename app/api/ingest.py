@@ -13,7 +13,14 @@ logger = logging.getLogger(__name__)
 @router.post("/ingest", response_model=IngestResponse)
 def ingest(request: IngestRequest) -> IngestResponse:
     logger.info("Ingest requested. file_id=%s knowledge_base_id=%s", request.file_id, request.knowledge_base_id)
-    return enqueue_ingest_task(request)
+    try:
+        return enqueue_ingest_task(request)
+    except FileNotFoundError as exc:
+        logger.warning("Ingest storage object missing. file_id=%s error=%s", request.file_id, exc)
+        raise HTTPException(status_code=422, detail="上传文件未同步到解析服务，请重新上传后再试。") from exc
+    except ValueError as exc:
+        logger.warning("Ingest document rejected. file_id=%s error=%s", request.file_id, exc)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.get("/ingest/tasks/{task_id}", response_model=IngestTaskResponse)

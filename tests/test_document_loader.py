@@ -1,3 +1,6 @@
+from zipfile import ZipFile
+
+import pytest
 from openpyxl import Workbook
 
 from app.core.config import settings
@@ -20,6 +23,34 @@ def test_load_document_text_reads_xlsx(tmp_path):
     assert title == "demo.xlsx"
     assert "工作表：用户" in text
     assert "周乐乐 | 西瓜" in text
+
+
+def test_load_document_text_reads_pptx_slides_in_numeric_order(tmp_path):
+    path = tmp_path / "quarterly-review.pptx"
+    with ZipFile(path, "w") as archive:
+        archive.writestr(
+            "ppt/slides/slide10.xml",
+            '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><a:t>第十页结论</a:t></p:sld>',
+        )
+        archive.writestr(
+            "ppt/slides/slide2.xml",
+            '<p:sld xmlns:p="urn:p" xmlns:a="urn:a"><a:t>第二页指标</a:t><a:t>增长 28%</a:t></p:sld>',
+        )
+
+    title, text = load_document_text(str(path))
+
+    assert title == "quarterly-review.pptx"
+    assert "第二页指标" in text
+    assert "增长 28%" in text
+    assert text.index("第二页指标") < text.index("第十页结论")
+
+
+def test_load_document_text_reports_broken_pptx(tmp_path):
+    path = tmp_path / "broken.pptx"
+    path.write_bytes(b"not-a-presentation")
+
+    with pytest.raises(ValueError, match="PPTX 文件已损坏"):
+        load_document_text(str(path))
 
 
 def test_split_text_keeps_short_paragraphs_together_and_splits_long_blocks():
