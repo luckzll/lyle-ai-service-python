@@ -61,6 +61,7 @@ def get_model_config(task: str) -> ChatModelConfig:
         api_key=_provider_api_key(provider),
         base_url=_provider_base_url(provider),
         timeout=settings.llm_timeout_seconds,
+        max_retries=max(0, settings.llm_max_retries),
     )
 
 

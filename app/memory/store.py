@@ -4,6 +4,7 @@ import json
 import re
 from collections import defaultdict
 from dataclasses import asdict, dataclass
+from math import inf, nextafter
 from threading import Lock
 from time import time
 from uuid import NAMESPACE_URL, uuid5
@@ -645,6 +646,12 @@ def upsert_structured_memory(
             conn.commit()
     else:
         with _lock:
+            latest_update = max(
+                (item.updated_at for item in _structured[user_id].values()),
+                default=0.0,
+            )
+            if now <= latest_update:
+                now = nextafter(latest_update, inf)
             _structured[user_id][key] = StructuredMemory(
                 key=key,
                 value=value,
@@ -1607,7 +1614,10 @@ def _extract_structured_candidates(
     if mode in {"rule", "hybrid"}:
         candidates.extend(_extract_structured_candidates_by_rule(text))
 
-    if mode in {"llm", "hybrid"}:
+    # The model is a fallback for first-person facts that deterministic rules do
+    # not cover. Running it on generic commands (for example "请只回复 …") lets
+    # model names and task labels leak into long-term-memory candidates.
+    if mode in {"llm", "hybrid"} and _looks_like_direct_user_memory_statement(text):
         candidates.extend(_extract_structured_candidates_by_llm(text, recent_turns or []))
 
     return _dedupe_structured_candidates(candidates)

@@ -17,6 +17,7 @@ def test_model_router_uses_task_specific_model(monkeypatch):
     monkeypatch.setattr(settings, "intent_model_provider", "local_ollama")
     monkeypatch.setattr(settings, "intent_model_name", "qwen2.5:7b")
     monkeypatch.setattr(settings, "ollama_base_url", "http://localhost:11434/v1")
+    monkeypatch.setattr(settings, "llm_max_retries", 0)
 
     chat_config = get_model_config(TASK_CHAT)
     intent_config = get_model_config(TASK_INTENT)
@@ -24,6 +25,7 @@ def test_model_router_uses_task_specific_model(monkeypatch):
     assert chat_config.provider == "deepseek"
     assert chat_config.model == "deepseek-chat"
     assert chat_config.api_key == "test-key"
+    assert chat_config.max_retries == 0
     assert intent_config.provider == "local_ollama"
     assert intent_config.model == "qwen2.5:7b"
     assert intent_config.base_url == "http://localhost:11434/v1"
