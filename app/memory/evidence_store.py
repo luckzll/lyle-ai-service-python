@@ -92,7 +92,7 @@ def list_profile_evidence(user_id: str, profile_id: int, *, limit: int = 100) ->
                     SELECT id, user_id, profile_id, fragment_id, relation, confidence, extract(epoch from created_at)
                     FROM profile_evidence
                     WHERE user_id = %s AND profile_id = %s
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, id DESC
                     LIMIT %s
                     """,
                     (user_id, profile_id, safe_limit),
@@ -102,7 +102,7 @@ def list_profile_evidence(user_id: str, profile_id: int, *, limit: int = 100) ->
 
     with _lock:
         items = [item for item in _evidence.get(user_id, {}).values() if item.profile_id == profile_id]
-    items.sort(key=lambda item: item.created_at, reverse=True)
+    items.sort(key=lambda item: (item.created_at, item.id), reverse=True)
     return [_evidence_to_api(item, user_id) for item in items[:safe_limit]]
 
 

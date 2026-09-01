@@ -156,6 +156,28 @@ def test_todo_operation_message_does_not_create_structured_memory(monkeypatch):
     assert result["candidateMemories"] == []
 
 
+def test_response_format_instruction_does_not_call_llm_memory_extractor(monkeypatch):
+    monkeypatch.setattr(settings, "redis_enabled", False)
+    monkeypatch.setattr(settings, "postgres_enabled", False)
+    monkeypatch.setattr(settings, "qdrant_enabled", False)
+    monkeypatch.setattr(settings, "milvus_enabled", False)
+    monkeypatch.setattr(settings, "structured_memory_extractor", "hybrid")
+
+    def fake_extract(question: str, recent_turns_text: str):
+        raise AssertionError("generic response-format instructions must not call the memory extractor")
+
+    monkeypatch.setattr("app.memory.store.invoke_structured_memory_chain", fake_extract)
+
+    result = remember_interaction(
+        "response-format-user",
+        "response-format-conversation",
+        "请只回复：Lyle E2E OK",
+        "Lyle E2E OK",
+    )
+
+    assert result["candidateMemories"] == []
+
+
 def test_structured_memory_confidence_adjusts_with_confirmation_and_disable(monkeypatch):
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "redis_enabled", False)

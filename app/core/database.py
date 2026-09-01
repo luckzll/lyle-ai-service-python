@@ -17,6 +17,8 @@ def get_postgres_pool() -> ConnectionPool:
             conninfo=settings.postgres_dsn,
             min_size=settings.postgres_pool_min_size,
             max_size=settings.postgres_pool_max_size,
+            kwargs={"connect_timeout": max(1, settings.postgres_connect_timeout_seconds)},
+            timeout=max(0.1, settings.postgres_pool_timeout_seconds),
             open=False,
         )
         _postgres_pool.open()
@@ -25,7 +27,7 @@ def get_postgres_pool() -> ConnectionPool:
 
 @contextmanager
 def postgres_connection() -> Iterator[Connection]:
-    with get_postgres_pool().connection() as conn:
+    with get_postgres_pool().connection(timeout=max(0.1, settings.postgres_pool_timeout_seconds)) as conn:
         yield conn
 
 

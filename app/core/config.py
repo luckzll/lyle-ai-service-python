@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://api.deepseek.com"
     # 大模型请求超时时间，单位：秒。
     llm_timeout_seconds: float = 60
+    # SDK 层重试次数。必须与 Java 上游读超时配合，避免 Python 仍在重试而 Java 已断开。
+    llm_max_retries: int = 0
 
     # ===== 多模型供应商配置 =====
     # OpenAI、Qwen、Ollama 是给后续多模型路由预留的供应商配置。
@@ -181,6 +183,9 @@ class Settings(BaseSettings):
     # Python 记忆库 PostgreSQL 连接池大小。
     postgres_pool_min_size: int = 1
     postgres_pool_max_size: int = 10
+    # 连接或取连接失败时快速返回，避免上游页面被默认 30 秒等待拖住。
+    postgres_connect_timeout_seconds: int = 3
+    postgres_pool_timeout_seconds: float = 3.0
 
     # ===== Redis：短期记忆 =====
     # 开启后短期对话记忆写入 Redis；关闭时使用进程内存，重启会丢失。

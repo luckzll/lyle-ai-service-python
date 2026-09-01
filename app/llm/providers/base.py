@@ -11,6 +11,7 @@ class ChatModelConfig:
     api_key: str = ""
     base_url: str = ""
     timeout: float = 60
+    max_retries: int = 0
 
 
 class OpenAICompatibleProvider:
@@ -27,6 +28,7 @@ class OpenAICompatibleProvider:
             base_url=config.base_url,
             model=config.model,
             timeout=config.timeout,
+            max_retries=config.max_retries,
             streaming=streaming,
             stream_usage=streaming,
             callbacks=callbacks,
