@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Iterator
 from time import perf_counter
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -36,6 +37,7 @@ from app.tools.tool_audit import audit_tool_call
 from app.usage.context import (
     ModelCallContext,
     activate_model_call_context,
+    current_model_call_context,
     set_model_call_context,
     usage_totals,
 )
@@ -223,7 +225,13 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     effective_image_message = message_with_image_attachments(request)
     image_tool = _stream_image_tool(effective_image_message)
     if image_tool:
-        return _image_chat_stream(request, image_tool, attachment_context, attachment_results)
+        return _image_chat_stream(
+            request,
+            image_tool,
+            attachment_context,
+            attachment_results,
+            usage_context=usage_context,
+        )
 
     request_started = perf_counter()
     logger.info(
@@ -591,6 +599,8 @@ def _image_chat_stream(
     tool_name: str,
     attachment_context: str = "",
     attachment_results: list[dict[str, object]] | None = None,
+    *,
+    usage_context: ModelCallContext,
 ) -> StreamingResponse:
     turn_id = request.turn_id or uuid.uuid4().hex
     image_message = "\n\n".join(
@@ -644,7 +654,7 @@ def _image_chat_stream(
                         agent_trace=image_trace,
                         tool_results=[*attachment_tool_results, tool_result],
                         review={"approved": bool(result.get("ok")), "reason": "image analysis"},
-                        usage={},
+                        usage=_image_usage_payload(usage_context),
                         used_memories=[],
                         memory_exclusions={},
                     ))
@@ -756,7 +766,7 @@ def _image_chat_stream(
                         "approved": bool(result.get("ok")),
                         "reason": str(result.get("batchStatus") or "image batch"),
                     },
-                    usage={},
+                    usage=_image_usage_payload(usage_context),
                     used_memories=[],
                     memory_exclusions={},
                 ))
@@ -811,13 +821,50 @@ def _image_chat_stream(
                 answer,
                 request.ai_config,
                 True,
+                usage_context,
+                request.source_message_id,
             )
 
     return StreamingResponse(
-        generate(),
+        _image_stream_with_usage_context(generate(), usage_context),
         media_type="text/event-stream; charset=utf-8",
         background=BackgroundTask(write_memory_after_stream),
     )
+
+
+def _image_stream_with_usage_context(
+    chunks: Iterator[str],
+    usage_context: ModelCallContext,
+) -> Iterator[str]:
+    """Rebind usage before every sync-generator resume.
+
+    Starlette can call each ``next()`` in a fresh worker context. A one-time
+    binding at generator start is therefore lost after the first SSE yield.
+    Rebinding around every resume also lets image batch workers copy the same
+    request ledger into their own threads.
+    """
+    iterator = iter(chunks)
+    while True:
+        previous_context = current_model_call_context()
+        set_model_call_context(usage_context)
+        try:
+            chunk = next(iterator)
+        except StopIteration:
+            return
+        finally:
+            set_model_call_context(previous_context)
+        yield chunk
+
+
+def _image_usage_payload(usage_context: ModelCallContext) -> dict[str, object]:
+    totals = usage_totals(usage_context)
+    return {
+        "promptTokens": int(totals["prompt_tokens"]),
+        "completionTokens": int(totals["completion_tokens"]),
+        "callCount": int(totals["call_count"]),
+        "estimatedCostMicros": int(totals["estimated_cost_micros"]),
+        "measurementSource": str(totals["measurement_source"]),
+    }
 
 
 def _sse(event: str, data: dict[str, object]) -> str:
