@@ -2,9 +2,10 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
-from app.api.chat import write_memory_in_background
+from app.api.chat import _memory_usage_payload, write_memory_in_background
 from app.graphs.multi_agent_graph import run_multi_agent_graph
-from app.schemas.chat import ChatRequest, ChatResponse, Source, Usage
+from app.schemas.chat import ChatRequest, ChatResponse
+from app.security.chat_debug import build_safe_chat_debug
 from app.usage.context import activate_model_call_context, usage_totals
 
 router = APIRouter()
@@ -36,20 +37,30 @@ def agent_chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatR
         usage_context,
     )
     contexts = result.get("contexts") or []
+    usage_payload = {
+        "promptTokens": int(usage_totals(usage_context)["prompt_tokens"]),
+        "completionTokens": int(usage_totals(usage_context)["completion_tokens"]),
+        "callCount": int(usage_totals(usage_context)["call_count"]),
+        "estimatedCostMicros": int(usage_totals(usage_context)["estimated_cost_micros"]),
+        "measurementSource": str(usage_totals(usage_context)["measurement_source"]),
+    }
+    memory_usage = _memory_usage_payload(
+        result.get("memory") if isinstance(result.get("memory"), dict) else {},
+        included=True,
+    )
+    safe_debug = build_safe_chat_debug(
+        knowledge_base_ids=request.knowledge_base_ids,
+        contexts=contexts,
+        agent_trace=result.get("agent_trace") or [],
+        tool_results=result.get("tool_results") or [],
+        review=result.get("review") or {},
+        usage=usage_payload,
+        used_memories=memory_usage["usedMemories"],
+        memory_exclusions=memory_usage["memoryExclusions"],
+        rag_queries=result.get("rag_queries") or [],
+        rag_sufficiency=result.get("rag_sufficiency") or {},
+    )
     return ChatResponse(
         answer=result.get("answer") or "",
-        sources=[
-            Source(docId=item["doc_id"], title=item["title"], chunk=item["chunk"])
-            for item in contexts
-        ],
-        usage=Usage(
-            promptTokens=int(usage_totals(usage_context)["prompt_tokens"]),
-            completionTokens=int(usage_totals(usage_context)["completion_tokens"]),
-            callCount=int(usage_totals(usage_context)["call_count"]),
-            estimatedCostMicros=int(usage_totals(usage_context)["estimated_cost_micros"]),
-            measurementSource=str(usage_totals(usage_context)["measurement_source"]),
-        ),
-        agentTrace=result.get("agent_trace") or [],
-        toolResults=result.get("tool_results") or [],
-        review=result.get("review") or {},
+        **safe_debug,
     )

@@ -3,6 +3,21 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app import main as main_module
 from app.main import app
+from app.security.secret_masker import mask_secrets
+
+
+def test_authorization_masking_preserves_and_masks_later_same_line_fields():
+    masked = mask_secrets(
+        "Authorization: Bearer auth-secret-token "
+        "fallback Bearer fallback-secret-token "
+        "dsn postgresql://db-user:db-password@db.internal/app"
+    )
+
+    assert masked == (
+        "Authorization=*** "
+        "fallback Bearer *** "
+        "dsn postgresql://***:***@db.internal/app"
+    )
 
 
 def test_insecure_internal_token_rejects_all_ai_routes(monkeypatch):
