@@ -95,6 +95,10 @@ class ChatResponse(BaseModel):
     answer: str
     sources: list[Source]
     usage: Usage
+    debug_version: str = Field(default="chat-debug-v1", alias="debugVersion")
+    knowledge_base_ids: list[str] = Field(default_factory=list, alias="knowledgeBaseIds")
+    retrieval_scope: dict[str, object] = Field(default_factory=dict, alias="retrievalScope")
+    debug_truncated: bool = Field(default=False, alias="debugTruncated")
     agent_trace: list[dict[str, object]] = Field(default_factory=list, alias="agentTrace")
     tool_results: list[dict[str, object]] = Field(default_factory=list, alias="toolResults")
     candidate_memories: list[dict[str, object]] = Field(default_factory=list, alias="candidateMemories")

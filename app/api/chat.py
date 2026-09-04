@@ -20,7 +20,8 @@ from app.plans.plan_builder import build_plan_candidate
 from app.projects.candidate_extractor import extract_project_candidates
 from app.projects.project_context_builder import build_project_context
 from app.projects.project_resolver import resolve_project
-from app.schemas.chat import ChatRequest, ChatResponse, Source, Usage
+from app.schemas.chat import ChatRequest, ChatResponse
+from app.security.chat_debug import build_safe_chat_debug
 from app.workflows.chat_suggestions import build_execution_suggestions
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
@@ -181,32 +182,28 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         result.get("memory") if isinstance(result.get("memory"), dict) else {},
         included=not _has_successful_tool(tool_results, "work_summary"),
     )
+    usage_payload = {
+        "promptTokens": int(usage_totals(usage_context)["prompt_tokens"]),
+        "completionTokens": int(usage_totals(usage_context)["completion_tokens"]),
+        "callCount": int(usage_totals(usage_context)["call_count"]),
+        "estimatedCostMicros": int(usage_totals(usage_context)["estimated_cost_micros"]),
+        "measurementSource": str(usage_totals(usage_context)["measurement_source"]),
+    }
+    safe_debug = build_safe_chat_debug(
+        knowledge_base_ids=request.knowledge_base_ids,
+        contexts=contexts,
+        agent_trace=agent_trace,
+        tool_results=tool_results,
+        review=result.get("review") or {},
+        usage=usage_payload,
+        used_memories=memory_usage["usedMemories"],
+        memory_exclusions=memory_usage["memoryExclusions"],
+        rag_queries=result.get("rag_queries") or [],
+        rag_sufficiency=result.get("rag_sufficiency") or {},
+    )
     return ChatResponse(
         answer=answer,
-        sources=[
-            Source(
-                docId=item["doc_id"],
-                title=item["title"],
-                chunk=item["chunk"],
-                score=str(item.get("score") or ""),
-                backend=str(item.get("backend") or ""),
-                hitModes=str(item.get("hitModes") or ""),
-                chunkIndex=str(item.get("chunkIndex") or ""),
-                parentTitle=str(item.get("parentTitle") or ""),
-                startChar=str(item.get("startChar") or ""),
-                endChar=str(item.get("endChar") or ""),
-            )
-            for item in contexts
-        ],
-        usage=Usage(
-            promptTokens=int(usage_totals(usage_context)["prompt_tokens"]),
-            completionTokens=int(usage_totals(usage_context)["completion_tokens"]),
-            callCount=int(usage_totals(usage_context)["call_count"]),
-            estimatedCostMicros=int(usage_totals(usage_context)["estimated_cost_micros"]),
-            measurementSource=str(usage_totals(usage_context)["measurement_source"]),
-        ),
-        agentTrace=agent_trace,
-        toolResults=tool_results,
+        **safe_debug,
         candidateMemories=candidate_memories,
         candidateTasks=_candidate_tasks_for_response(request.message, tool_results),
         candidateGoals=project_candidates["candidateGoals"],
@@ -215,9 +212,6 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         candidatePlans=[plan_candidate] if plan_candidate else [],
         executionSuggestions=build_execution_suggestions(request.user_id, request.message),
         projectContext=project_context,
-        review=result.get("review") or {},
-        usedMemories=memory_usage["usedMemories"],
-        memoryExclusions=memory_usage["memoryExclusions"],
         memoryExplanationVersion="v1",
     )
 
@@ -503,24 +497,31 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "candidateCount": len(candidate_memories),
                     "backgroundWriteDeferred": True,
                 })
+                usage_payload = {
+                    "promptTokens": usage_totals(usage_context)["prompt_tokens"],
+                    "completionTokens": usage_totals(usage_context)["completion_tokens"],
+                    "callCount": usage_totals(usage_context)["call_count"],
+                    "estimatedCostMicros": usage_totals(usage_context)["estimated_cost_micros"],
+                    "measurementSource": usage_totals(usage_context)["measurement_source"],
+                }
+                memory_usage = _memory_usage_payload(
+                    state.get("memory") if isinstance(state.get("memory"), dict) else {},
+                    included=not has_work_summary_tool,
+                )
+                safe_debug = build_safe_chat_debug(
+                    knowledge_base_ids=request.knowledge_base_ids,
+                    contexts=contexts,
+                    agent_trace=agent_trace,
+                    tool_results=state.get("tool_results") or [],
+                    review=review,
+                    usage=usage_payload,
+                    used_memories=memory_usage["usedMemories"],
+                    memory_exclusions=memory_usage["memoryExclusions"],
+                    rag_queries=state.get("rag_queries") or [],
+                    rag_sufficiency=state.get("rag_sufficiency") or {},
+                )
                 meta = {
-                    "sources": [
-                        {
-                            "docId": item["doc_id"],
-                            "title": item["title"],
-                            "chunk": item["chunk"],
-                            "score": str(item.get("score") or ""),
-                            "backend": str(item.get("backend") or ""),
-                            "hitModes": str(item.get("hitModes") or ""),
-                            "chunkIndex": str(item.get("chunkIndex") or ""),
-                            "parentTitle": str(item.get("parentTitle") or ""),
-                            "startChar": str(item.get("startChar") or ""),
-                            "endChar": str(item.get("endChar") or ""),
-                        }
-                        for item in contexts
-                    ],
-                    "agentTrace": agent_trace,
-                    "toolResults": state.get("tool_results") or [],
+                    **safe_debug,
                     "candidateMemories": candidate_memories,
                     "candidateTasks": _candidate_tasks_for_response(request.message, state.get("tool_results") or []),
                     "candidateGoals": project_candidates["candidateGoals"],
@@ -529,18 +530,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "candidatePlans": candidate_plans,
                     "executionSuggestions": build_execution_suggestions(request.user_id, request.message),
                     "projectContext": project_context,
-                    "review": review,
-                    "usage": {
-                        "promptTokens": usage_totals(usage_context)["prompt_tokens"],
-                        "completionTokens": usage_totals(usage_context)["completion_tokens"],
-                        "callCount": usage_totals(usage_context)["call_count"],
-                        "estimatedCostMicros": usage_totals(usage_context)["estimated_cost_micros"],
-                        "measurementSource": usage_totals(usage_context)["measurement_source"],
-                    },
-                    **_memory_usage_payload(
-                        state.get("memory") if isinstance(state.get("memory"), dict) else {},
-                        included=not has_work_summary_tool,
-                    ),
                     "memoryExplanationVersion": "v1",
                 }
                 meta_started = perf_counter()
@@ -643,17 +632,22 @@ def _image_chat_stream(
                         elapsed_ms=elapsed_ms,
                     )
                     yield _sse("delta", {"text": answer})
-                    yield _sse("meta", {
-                        "sources": [],
-                        "agentTrace": [{
+                    image_trace = [{
                             "agent": "tool_agent",
                             "tool": tool_name,
                             "imageCount": len(refs),
                             "streaming": True,
-                        }],
-                        "toolResults": [*attachment_tool_results, tool_result],
-                        "review": {"approved": bool(result.get("ok")), "reason": "image analysis"},
-                    })
+                    }]
+                    yield _sse("meta", build_safe_chat_debug(
+                        knowledge_base_ids=request.knowledge_base_ids,
+                        contexts=[],
+                        agent_trace=image_trace,
+                        tool_results=[*attachment_tool_results, tool_result],
+                        review={"approved": bool(result.get("ok")), "reason": "image analysis"},
+                        usage={},
+                        used_memories=[],
+                        memory_exclusions={},
+                    ))
                     final_answer_holder["answer"] = answer
                     yield _sse("turn.status", {
                         "turnId": turn_id,
@@ -744,9 +738,7 @@ def _image_chat_stream(
                     "message": "正在整理生成结果…",
                 })
                 yield _sse("delta", {"text": answer})
-                yield _sse("meta", {
-                    "sources": [],
-                    "agentTrace": [{
+                image_trace = [{
                         "agent": "tool_agent",
                         "tool": tool_name,
                         "batchId": batch_id,
@@ -754,13 +746,20 @@ def _image_chat_stream(
                         "completedCount": result.get("completedCount", 0),
                         "elapsedMillis": elapsed_ms,
                         "streaming": True,
-                    }],
-                    "toolResults": [*attachment_tool_results, tool_result],
-                    "review": {
+                }]
+                yield _sse("meta", build_safe_chat_debug(
+                    knowledge_base_ids=request.knowledge_base_ids,
+                    contexts=[],
+                    agent_trace=image_trace,
+                    tool_results=[*attachment_tool_results, tool_result],
+                    review={
                         "approved": bool(result.get("ok")),
                         "reason": str(result.get("batchStatus") or "image batch"),
                     },
-                })
+                    usage={},
+                    used_memories=[],
+                    memory_exclusions={},
+                ))
                 yield _sse("turn.status", {
                     "turnId": turn_id,
                     "phase": "COMPLETED" if result.get("ok") else "FAILED",
