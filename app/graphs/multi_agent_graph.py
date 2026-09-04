@@ -32,6 +32,7 @@ class MultiAgentState(TypedDict):
     rag_sufficiency: dict[str, object]
     tool_results: list[dict[str, object]]
     tool_context: str
+    supplemental_context: str
     candidate_memories: list[dict[str, object]]
     answer: str
     intent: str
@@ -153,9 +154,12 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     has_work_summary_tool = _has_successful_tool(state["tool_results"], "work_summary")
     memory_context = "" if has_work_summary_tool else state["memory_context"]
+    writer_tool_context = "\n\n".join(
+        item for item in [state["tool_context"], state["supplemental_context"]] if item
+    )
     writer_input = _writer_input_debug(
         memory_context,
-        state["tool_context"],
+        writer_tool_context,
         state["contexts"],
         excluded_memory_context_chars=len(state["memory_context"]) if has_work_summary_tool else 0,
         memory_exclusion_reason="work_summary_tool_takes_priority" if has_work_summary_tool else "",
@@ -169,7 +173,7 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
         state["question"],
         state["contexts"],
         memory_context,
-        state["tool_context"],
+        writer_tool_context,
         state["review_feedback"],
     )
     logger.info(
@@ -286,12 +290,15 @@ def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
 
 def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
+    review_context = "\n\n".join(
+        item for item in [state["memory_context"], state["supplemental_context"]] if item
+    )
     try:
         review = run_reviewer_agent(
             state["question"],
             state["answer"],
             state["contexts"],
-            state["memory_context"],
+            review_context,
             memory=state["memory"],
             rag_sufficiency=state["rag_sufficiency"],
             tool_results=state["tool_results"],
@@ -301,7 +308,7 @@ def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
             state["question"],
             state["answer"],
             state["contexts"],
-            state["memory_context"],
+            review_context,
         )
     return {
         **state,
@@ -375,8 +382,11 @@ def run_multi_agent_graph(
     conversation_id: str | None,
     question: str,
     knowledge_base_ids: list[str],
+    supplemental_context: str = "",
 ) -> dict:
-    return multi_agent_graph.invoke(_initial_state(user_id, conversation_id, question, knowledge_base_ids))
+    return multi_agent_graph.invoke(
+        _initial_state(user_id, conversation_id, question, knowledge_base_ids, supplemental_context)
+    )
 
 
 def prepare_multi_agent_context(
@@ -384,8 +394,11 @@ def prepare_multi_agent_context(
     conversation_id: str | None,
     question: str,
     knowledge_base_ids: list[str],
+    supplemental_context: str = "",
 ) -> dict:
-    return context_graph.invoke(_initial_state(user_id, conversation_id, question, knowledge_base_ids))
+    return context_graph.invoke(
+        _initial_state(user_id, conversation_id, question, knowledge_base_ids, supplemental_context)
+    )
 
 
 def _initial_state(
@@ -393,6 +406,7 @@ def _initial_state(
     conversation_id: str | None,
     question: str,
     knowledge_base_ids: list[str],
+    supplemental_context: str = "",
 ) -> MultiAgentState:
     return {
         "user_id": user_id,
@@ -407,6 +421,7 @@ def _initial_state(
         "rag_sufficiency": {},
         "tool_results": [],
         "tool_context": "",
+        "supplemental_context": supplemental_context,
         "candidate_memories": [],
         "answer": "",
         "intent": "chat",

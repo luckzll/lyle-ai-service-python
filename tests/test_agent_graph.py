@@ -71,6 +71,51 @@ def test_multi_agent_graph_runs_agents(monkeypatch):
     assert result["agent_trace"][1]["memorySummary"]["summaryPreview"] == "用户在做 AI 应用"
 
 
+def test_multi_agent_graph_includes_supplemental_context_in_writer(monkeypatch):
+    from app.graphs.multi_agent_graph import run_multi_agent_graph
+
+    monkeypatch.setattr(
+        "app.graphs.multi_agent_graph.run_supervisor_agent",
+        lambda question, knowledge_base_ids: {
+            "intent": "chat",
+            "use_memory": True,
+            "use_rag": False,
+            "use_tools": False,
+            "next_agents": ["memory_agent", "writer_agent"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.graphs.multi_agent_graph.run_memory_agent",
+        lambda user_id, conversation_id, question: {"memory": {}, "memory_context": "长期记忆"},
+    )
+
+    captured = {}
+
+    def fake_writer(question, contexts, memory_context, tool_context="", review_feedback=""):
+        captured["tool_context"] = tool_context
+        return "已使用项目上下文"
+
+    monkeypatch.setattr("app.graphs.multi_agent_graph.run_writer_agent", fake_writer)
+    def fake_reviewer(question, answer, contexts, memory_context, **kwargs):
+        captured["review_context"] = memory_context
+        return {"approved": True, "score": 1.0, "reason": "ok", "skipped": True}
+
+    monkeypatch.setattr("app.graphs.multi_agent_graph.run_reviewer_agent", fake_reviewer)
+
+    result = run_multi_agent_graph(
+        "u1",
+        "c1",
+        "下一步是什么？",
+        [],
+        "[项目上下文]\n项目：知识库体验优化",
+    )
+
+    assert result["answer"] == "已使用项目上下文"
+    assert "项目：知识库体验优化" in captured["tool_context"]
+    assert "项目：知识库体验优化" in captured["review_context"]
+    assert "项目：知识库体验优化" in result["agent_trace"][-2]["writerInput"]["toolContext"]
+
+
 def test_multi_agent_graph_rewrites_when_review_fails(monkeypatch):
     from app.graphs.multi_agent_graph import run_multi_agent_graph
 
