@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from typing import Literal
 from fastapi import APIRouter, HTTPException
 
 from app.memory.store import (
@@ -31,6 +32,73 @@ from app.memory.governance import (
 )
 
 router = APIRouter()
+
+
+class FactRevisionRequest(BaseModel):
+    expectedRevision: int = Field(ge=1)
+    status: Literal['active', 'disabled', 'forgotten'] | None = None
+    value: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+@router.get('/memory/{user_id}/facts')
+def memory_facts(user_id: str):
+    from app.memory import fact_store
+    if not fact_store.enabled():
+        raise HTTPException(409, 'MEMORY_FACTS_DISABLED')
+    return {'items': fact_store.list_facts(user_id), 'migration': fact_store.migration_report(user_id)}
+
+
+@router.put('/memory/{user_id}/facts/{fact_id}')
+def update_memory_fact(user_id: str, fact_id: str, request: FactRevisionRequest):
+    from app.memory import fact_store
+    if not fact_store.enabled():
+        raise HTTPException(409, 'MEMORY_FACTS_DISABLED')
+    if request.status is None and request.value is None:
+        raise HTTPException(422, 'MEMORY_FACT_CHANGE_REQUIRED')
+    try:
+        return fact_store.revise_fact(user_id, fact_id, expected_revision=request.expectedRevision,
+                                      status=request.status, value=request.value)
+    except KeyError:
+        raise HTTPException(404, 'MEMORY_FACT_NOT_FOUND')
+    except fact_store.FactConflict as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
+class SchemaRecallRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=8000)
+    mode: Literal["auto", "single_pass", "agent"] = "auto"
+    allowedPaths: list[str] | None = Field(default=None, max_length=100)
+
+
+@router.get("/memory/{user_id}/schema")
+def memory_schema_status(user_id: str):
+    from app.memory.schema_store import read_state, build_status
+    from app.core.config import settings
+    from app.memory.fact_store import enabled as facts_enabled
+    return {"enabled": settings.memory_schema_enabled, 'factsEnabled': facts_enabled(), **build_status(read_state(user_id))}
+
+
+@router.post("/memory/{user_id}/schema/rebuild")
+def rebuild_memory_schema(user_id: str):
+    from app.memory.schema_store import request_build, build_status
+    from app.core.config import settings
+    if not settings.memory_schema_enabled:
+        raise HTTPException(status_code=409, detail="MEMORY_SCHEMA_DISABLED")
+    return build_status(request_build(user_id, force=True))
+
+
+@router.post("/memory/{user_id}/schema/recall")
+def recall_memory_schema(user_id: str, request: SchemaRecallRequest):
+    from app.core.config import settings
+    from app.memory.store import recall_memory
+    if not settings.memory_schema_enabled:
+        raise HTTPException(status_code=409, detail="MEMORY_SCHEMA_DISABLED")
+    result = recall_memory(user_id, None, request.question, include_vector=False,
+                           schema_mode=request.mode, allowed_paths=request.allowedPaths)
+    return {"schema": result["schema_recall"], "context": result["profile_context"]["context"],
+            "usedMemories": result["used_memories"]}
 
 
 class StructuredMemoryRequest(BaseModel):

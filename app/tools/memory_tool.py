@@ -8,8 +8,10 @@ def recall_memory_tool(
     conversation_id: str | None,
     question: str,
     include_vector: bool = True,
+    *,
+    depth: str = "full",
 ) -> dict[str, object]:
-    memory = recall_memory(user_id, conversation_id, question, include_vector=include_vector)
+    memory = recall_memory(user_id, conversation_id, question, include_vector=include_vector, depth=depth)
     return {
         "memory": memory,
         "memory_context": format_memory_context(memory),

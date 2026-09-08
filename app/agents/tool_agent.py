@@ -138,7 +138,7 @@ def _route_tools_with_context(user_id: str, conversation_id: str | None, questio
     if not settings.tool_router_llm_enabled:
         return {"selected_tools": [], "tool_inputs": {}, "reason": "LLM Tool Router 未开启。", "router": "rule"}
     try:
-        memory = recall_memory(user_id, conversation_id, question)
+        memory = recall_memory(user_id, conversation_id, question, depth="light")
         context = format_memory_context(memory)
     except Exception:
         context = ""

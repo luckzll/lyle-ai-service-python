@@ -17,6 +17,19 @@ def build_profile_from_structured_memory(
 ) -> dict[str, object]:
     schema_path = schema_path_for_memory(key, value)
     source_ref, source_text = parse_source(source)
+    existing = get_user_profile(user_id, schema_path)
+    # A retry of the same message confirmation is not an independent source.
+    # Without a message anchor, keep distinct observations rather than guessing.
+    if existing and existing.get("status") == "active" and _source_message_id_from_ref(source_ref):
+        for item in list_profile_evidence(user_id, int(existing["id"]), limit=100):
+            prior = item.get("fragment") if isinstance(item.get("fragment"), dict) else {}
+            if (prior.get("status") == "active" and prior.get("sourceRef") == source_ref
+                    and _normalized_comparison(str(prior.get("normalizedText") or "")) == _normalized_comparison(value)):
+                return {
+                    "action": "duplicate_source", "schemaPath": schema_path, "value": value,
+                    "relation": str(item.get("relation") or "duplicate"), "fragment": prior,
+                    "profile": existing, "evidence": item, "requiresUserConfirmation": False,
+                }
     fragment = create_memory_fragment(
         user_id,
         source_text=source_text or value,
@@ -30,7 +43,6 @@ def build_profile_from_structured_memory(
         confidence=confidence,
         status="active",
     )
-    existing = get_user_profile(user_id, schema_path)
     relation = _relation_for_profile(existing, value)
     if relation == "contradict":
         profile = set_user_profile_status(user_id, schema_path, "conflicted")
@@ -78,7 +90,8 @@ def synthesize_profile_summary(user_id: str, profile: dict[str, object]) -> dict
     if not profile_id or not schema_path:
         return profile
     evidence = list_profile_evidence(user_id, profile_id, limit=50)
-    values = _evidence_values(evidence)
+    # A single-valued slot must not concatenate historical versions into a new fact.
+    values = _evidence_values(evidence) if is_multi_value_path(schema_path) else [str(profile.get("value") or "")]
     if not values:
         values = _split_items(str(profile.get("value") or ""))
     if not values:
@@ -101,6 +114,8 @@ def parse_source(source: str) -> tuple[str, str]:
 def _relation_for_profile(existing: dict[str, object] | None, value: str) -> str:
     if not existing:
         return "support"
+    if existing.get("status") == "conflicted":
+        return "contradict"  # Only explicit conflict resolution may reactivate it.
     existing_value = str(existing.get("value") or "")
     if not existing_value:
         return "support"
@@ -123,12 +138,14 @@ def _evidence_values(evidence: list[dict[str, object]]) -> list[str]:
         if item.get("relation") not in {"support", "supplement", "duplicate"}:
             continue
         fragment = item.get("fragment") if isinstance(item.get("fragment"), dict) else {}
+        if fragment.get("status") != "active":
+            continue
         values.extend(_split_items(str(fragment.get("normalizedText") or "")))
     return _dedupe_values(values)
 
 
 def _split_items(value: str) -> list[str]:
-    return [item.strip() for item in re.split(r"[、,，;；/和与]+", value or "") if item.strip()]
+    return [item.strip() for item in re.split(r"[、,，;；]+", value or "") if item.strip()]
 
 
 def _normalized_comparison(value: str) -> str:

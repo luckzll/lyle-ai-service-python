@@ -268,7 +268,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
     tool_results = list(state.get("tool_results")) if isinstance(state.get("tool_results"), list) else []
     tool_results.extend({"tool": "chat_attachment_parse", **item} for item in attachment_results)
     state["tool_results"] = tool_results
-    has_work_summary_tool = _has_successful_tool(tool_results, "work_summary")
+    from app.memory.fact_store import enabled as facts_enabled
+    has_work_summary_tool = _has_successful_tool(tool_results, "work_summary") and not facts_enabled()
     effective_memory_context = "" if has_work_summary_tool else memory_context
     confirmation_guidance = _v3_confirmation_guidance(
         project_candidates["candidateGoals"],
