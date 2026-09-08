@@ -25,6 +25,10 @@ def isolate_unit_tests_from_external_services(monkeypatch: pytest.MonkeyPatch):
     ):
         monkeypatch.setattr(settings, field, "")
 
+    # Existing memory tests exercise the explicit legacy rollback path. The
+    # versioned-schema contract suite opts back in and tests the default path.
+    monkeypatch.setattr(settings, "memory_schema_enabled", False)
+
     for field in (
         "chat_model_provider",
         "intent_model_provider",

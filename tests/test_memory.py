@@ -400,7 +400,8 @@ def test_confirmed_candidate_memory_becomes_recallable(monkeypatch):
 
     upsert_structured_memory("confirm-user", "food_preference", "西瓜", source="confirmed", status="active")
     memory_after = recall_memory("confirm-user", "confirm-conversation", "我喜欢什么")
-    assert any(item["key"] == "food_preference" and item["value"] == "西瓜" for item in memory_after["structured"])
+    assert any(item["schemaPath"] == "preferences.food.likes" and item["value"] == "西瓜" for item in memory_after["profiles"])
+    assert memory_after["structured"] == []  # Do not inject the same fact twice.
 
 
 def test_confirmed_structured_memory_projects_to_profile_fragment_and_evidence(monkeypatch):
@@ -655,7 +656,7 @@ def test_export_memory_returns_latest_structured_when_over_recall_limit(monkeypa
     assert len(memory["structured_all"]) == 3
 
 
-def test_structured_recall_falls_back_to_latest_when_question_misses(monkeypatch):
+def test_light_recall_does_not_fall_back_to_unrelated_latest_facts(monkeypatch):
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "redis_enabled", False)
     monkeypatch.setattr(settings, "qdrant_enabled", False)
@@ -665,10 +666,10 @@ def test_structured_recall_falls_back_to_latest_when_question_misses(monkeypatch
     upsert_structured_memory("fallback-user", "name", "Lyle")
     upsert_structured_memory("fallback-user", "career", "工程师")
 
-    memory = recall_memory("fallback-user", None, "今天天气怎么样")
+    memory = recall_memory("fallback-user", None, "今天天气怎么样", depth="light")
 
-    assert len(memory["structured"]) == 1
-    assert memory["structured"][0]["key"] == "career"
+    assert memory["structured"] == []
+    assert memory["profiles"] == []
 
 
 def test_structured_memory_conflict_ignores_lower_confidence(monkeypatch):
@@ -755,7 +756,7 @@ def test_memory_compresses_only_after_trigger_limit(monkeypatch):
     assert "问题0" in memory["summary"]
 
 
-def test_memory_summary_falls_back_to_latest_user_summary(monkeypatch):
+def test_memory_summary_does_not_fall_back_across_conversations(monkeypatch):
     monkeypatch.setattr(settings, "redis_enabled", False)
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "qdrant_enabled", False)
@@ -777,9 +778,8 @@ def test_memory_summary_falls_back_to_latest_user_summary(monkeypatch):
     target_memory = export_memory(user_id, target_conversation)
 
     assert "摘要问题0" in source_memory["summary"]
-    assert target_memory["summary"] == source_memory["summary"]
-    assert target_memory["summary_meta"]["fallback"] is True
-    assert target_memory["summary_meta"]["sourceConversationId"] == source_conversation
+    assert target_memory["summary"] == ""
+    assert target_memory["summary_meta"]["fallback"] is False
 
 
 def test_memory_compression_does_not_merge_fallback_summary(monkeypatch):
@@ -1107,7 +1107,7 @@ def test_structured_memory_replaces_multi_value_when_source_says_change(monkeypa
     assert_candidate(result, "food_preference", "香蕉")
 
 
-def test_memory_writes_semantic_and_vector_when_enabled(monkeypatch):
+def test_memory_does_not_vectorize_unconfirmed_facts_even_when_backends_enabled(monkeypatch):
     monkeypatch.setattr(settings, "redis_enabled", False)
     monkeypatch.setattr(settings, "postgres_enabled", False)
     monkeypatch.setattr(settings, "qdrant_enabled", True)
@@ -1129,14 +1129,11 @@ def test_memory_writes_semantic_and_vector_when_enabled(monkeypatch):
 
     result = remember_interaction("vector-user", "vector-conversation", "我喜欢西瓜", "这是一段不应该进入向量记忆的助手回复")
 
-    assert writes == [
-        ("qdrant", "用户：我喜欢西瓜"),
-        ("milvus", "用户：我喜欢西瓜"),
-    ]
+    assert writes == []
     assert_candidate(result, "food_preference", "西瓜")
-    assert result["vectorMemoryWrite"]["shouldWrite"] is True
-    assert result["vectorMemoryWrite"]["reason"] == "value_signal"
-    assert result["vectorMemoryWrite"]["writtenBackends"] == ["qdrant", "milvus"]
+    assert result["vectorMemoryWrite"]["shouldWrite"] is False
+    assert result["vectorMemoryWrite"]["reason"] == "unconfirmed_or_governed_memory"
+    assert result["vectorMemoryWrite"]["writtenBackends"] == []
 
 
 def test_memory_skips_noisy_vector_writes(monkeypatch):

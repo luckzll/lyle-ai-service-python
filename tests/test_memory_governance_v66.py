@@ -142,6 +142,9 @@ def test_same_semantic_conflict_from_different_fragments_is_deduplicated(monkeyp
 
 def test_async_purge_removes_profile_sources_and_structured_value(monkeypatch):
     configure_memory_fallback(monkeypatch)
+    # ISO serialization rounds to microseconds; a same-tick Windows clock can
+    # otherwise put nextAttemptAt fractionally in the future. Test due jobs.
+    monkeypatch.setattr(governance_module, "time", lambda: 1_780_000_000.0)
     user_id = "v66-purge-user"
     upsert_structured_memory(user_id, "food_preference", "西瓜", confidence=0.9, status="active")
     record = list_memory_records(user_id)["items"][0]

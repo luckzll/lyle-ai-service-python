@@ -483,7 +483,14 @@ def _memory_snapshot(user_id: str, conversation_id: str | None, question: str) -
     return {
         "ok": True,
         "content": _summarize_memory_snapshot(memory),
-        "raw": memory,
+        # This tool is callable during generation. Management bodies belong only
+        # in the authenticated memory API, not tool results or model context.
+        "raw": {
+            "summary": "available" if memory.get("summary") else "",
+            "structured": [{} for _ in memory.get("structured") or []],
+            "short_term": [{} for _ in memory.get("short_term") or []],
+            "retrieved": [],
+        },
     }
 
 
@@ -499,14 +506,20 @@ def _memory_stats(user_id: str, conversation_id: str | None, question: str) -> d
             "SELECT COUNT(*) FROM memory_summary WHERE user_id = %s",
             (user_id,),
         ).fetchone()[0]
-        structured_count = conn.execute(
-            "SELECT COUNT(*) FROM structured_memory WHERE user_id = %s AND status = 'active'",
-            (user_id,),
-        ).fetchone()[0]
-        disabled_structured_count = conn.execute(
-            "SELECT COUNT(*) FROM structured_memory WHERE user_id = %s AND status <> 'active'",
-            (user_id,),
-        ).fetchone()[0]
+        from app.memory import fact_store
+        if fact_store.enabled():
+            facts = fact_store.list_facts(user_id)
+            structured_count = sum(fact['status'] == 'active' for fact in facts)
+            disabled_structured_count = len(facts) - structured_count
+        else:
+            structured_count = conn.execute(
+                "SELECT COUNT(*) FROM structured_memory WHERE user_id = %s AND status = 'active'",
+                (user_id,),
+            ).fetchone()[0]
+            disabled_structured_count = conn.execute(
+                "SELECT COUNT(*) FROM structured_memory WHERE user_id = %s AND status <> 'active'",
+                (user_id,),
+            ).fetchone()[0]
 
     return {
         "ok": True,
@@ -882,12 +895,12 @@ def _list_tools(user_id: str, conversation_id: str | None, question: str) -> dic
 
 
 def _summarize_memory_snapshot(memory: dict[str, object]) -> str:
-    summary = str(memory.get("summary") or "无长期摘要")
+    summary_count = 1 if memory.get("summary") else 0
     structured = memory.get("structured") or []
     short_term = memory.get("short_term") or []
     retrieved = memory.get("retrieved") or []
     return (
-        f"长期摘要：{summary}；"
+        f"当前会话摘要数量：{summary_count}；"
         f"结构化记忆数量：{len(structured)}；"
         f"短期记忆数量：{len(short_term)}；"
         f"向量召回记忆数量：{len(retrieved)}。"

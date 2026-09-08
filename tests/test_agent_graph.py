@@ -275,7 +275,7 @@ def test_tool_router_can_rewrite_followup_image_generation(monkeypatch):
     monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
     monkeypatch.setattr(
         "app.agents.tool_agent.recall_memory",
-        lambda user_id, conversation_id, question: {
+        lambda user_id, conversation_id, question, **kwargs: {
             "short_term": [
                 {"role": "user", "content": "帮我生成一张赛博朋克猫"},
                 {"role": "assistant", "content": "图片已生成。"},
@@ -341,7 +341,7 @@ def test_tool_agent_keeps_original_question_for_calendar(monkeypatch):
     from app.agents.tool_agent import run_tool_agent
 
     monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
-    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question: {})
+    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question, **kwargs: {})
     monkeypatch.setattr(
         "app.agents.tool_agent.route_tools_with_llm",
         lambda question, context: {
@@ -374,7 +374,7 @@ def test_tool_agent_skips_low_confidence_llm_route(monkeypatch):
 
     monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
     monkeypatch.setattr(settings, "tool_router_confidence_threshold", 0.65)
-    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question: {})
+    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question, **kwargs: {})
     monkeypatch.setattr(
         "app.agents.tool_agent.route_tools_with_llm",
         lambda question, context: {
@@ -399,7 +399,7 @@ def test_tool_agent_skips_when_router_needs_clarification(monkeypatch):
     from app.agents.tool_agent import decide_tool_use
 
     monkeypatch.setattr(settings, "tool_router_llm_enabled", True)
-    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question: {})
+    monkeypatch.setattr("app.agents.tool_agent.recall_memory", lambda user_id, conversation_id, question, **kwargs: {})
     monkeypatch.setattr(
         "app.agents.tool_agent.route_tools_with_llm",
         lambda question, context: {

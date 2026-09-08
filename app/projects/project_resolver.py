@@ -26,6 +26,9 @@ def resolve_project(user_id: str, conversation_id: str | None, user_input: str, 
             "reason": "当前项目页显式指定项目",
             "candidates": [{"projectId": project["id"], "projectName": project["name"], "confidence": 1.0}],
         }
+        from app.memory.fact_store import enabled as facts_enabled
+        if facts_enabled() and project.get('status') not in {None, 'active'}:
+            return {**result, 'projectId': None, 'requiresClarification': True, 'reason': '项目已结束或归档，不自动沿用为当前任务'}
         if conversation_id:
             try:
                 create_project_link(
@@ -94,7 +97,7 @@ def resolve_project(user_id: str, conversation_id: str | None, user_input: str, 
             "projectId": None,
             "projectName": "",
             "confidence": 0.0,
-            "requiresClarification": len(projects) > 1 and _looks_project_related(text),
+            "requiresClarification": len(projects) > 1 and (_looks_project_related(text) or _looks_project_followup(text)),
             "reason": "输入像项目讨论，但没有命中项目名称或描述关键词" if _looks_project_related(text) else "未命中项目关键词",
             "candidates": [{"projectId": item["id"], "projectName": item["name"]} for item in projects[:5]],
         }
@@ -157,9 +160,11 @@ def _project_from_conversation_link(
     projects: list[dict[str, Any]],
     text: str,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    if not conversation_id or not _looks_project_followup(text):
+    from app.memory.fact_store import enabled as facts_enabled
+    if not conversation_id or (not facts_enabled() and not _looks_project_followup(text)):
         return None
     best: tuple[dict[str, Any], dict[str, Any]] | None = None
+    linked_ids = set()
     for project in projects:
         try:
             links = list_project_links(user_id, int(project["id"]), target_type="conversation", limit=20)
@@ -168,6 +173,9 @@ def _project_from_conversation_link(
         for link in links:
             if str(link.get("targetId") or "") != str(conversation_id):
                 continue
+            linked_ids.add(project['id'])
             if best is None or float(link.get("confidence") or 0.0) > float(best[1].get("confidence") or 0.0):
                 best = (project, link)
+    if facts_enabled() and len(linked_ids) > 1:
+        return None  # Multiple associated tasks need disambiguation, not a guess.
     return best

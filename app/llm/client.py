@@ -76,6 +76,8 @@ def summarize_memory(existing_summary: str, turns_text: str) -> str:
 
 
 def extract_structured_memories(question: str, recent_turns_text: str) -> list[dict[str, object]]:
+    from app.memory.profile_schema import PROFILE_SCHEMA
+
     if not is_memory_model_configured():
         return []
 
@@ -88,7 +90,10 @@ def extract_structured_memories(question: str, recent_turns_text: str) -> list[d
                 "可用 key 包括 name、identity、career、food_preference、pet_preference、sport_preference、"
                 "entertainment_preference、preference、negative_preference、food_negative_preference、"
                 "pet_negative_preference、sport_negative_preference、entertainment_negative_preference、"
-                "current_project、technology_stack、goal、constraint。"
+                  "current_project、technology_stack、goal、constraint。"
+                  "也可使用这些标准 Schema 槽位："
+                  + "、".join(f"{path}（{item.label}）" for path, item in PROFILE_SCHEMA.items() if not item.control and not item.sensitive)
+                  + "。语言习惯、社交偏好、边界和触发点必须来自用户明确陈述，不得推测心理或健康状况。"
                 "偏好必须尽量细分：水果/食物用 food_preference，宠物/动物用 pet_preference，"
                 "运动赛事用 sport_preference，唱歌/游戏/影视等用 entertainment_preference；"
                 "不喜欢/讨厌类负向偏好使用 negative_preference 或对应细分 negative key；"

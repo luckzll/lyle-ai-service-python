@@ -40,6 +40,7 @@ from app.workers.notification_worker import run_notification_worker
 from app.workers.automation_scheduler_worker import run_automation_scheduler_worker
 from app.workers.usage_outbox_worker import run_usage_outbox_worker
 from app.workers.memory_purge_worker import run_memory_purge_worker
+from app.workers.memory_schema_worker import run_memory_schema_worker
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -78,6 +79,7 @@ async def lifespan(app: FastAPI):
     automation_task: asyncio.Task[None] | None = None
     usage_outbox_task: asyncio.Task[None] | None = None
     memory_purge_task: asyncio.Task[None] | None = None
+    schema_task = asyncio.create_task(run_memory_schema_worker(stop_event)) if settings.memory_schema_enabled else None
     if settings.notification_worker_enabled:
         notification_task = asyncio.create_task(run_notification_worker(stop_event))
     if settings.memory_decay_worker_enabled:
@@ -92,6 +94,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         stop_event.set()
+        if schema_task is not None:
+            await schema_task
         if notification_task is not None:
             await notification_task
         if memory_decay_task is not None:

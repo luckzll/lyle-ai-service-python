@@ -8,6 +8,7 @@ from time import time
 from app.core.config import settings
 from app.core.database import postgres_connection
 from app.memory.profile_schema import is_multi_value_path, schema_item
+from app.memory.schema_store import schema_dirty
 
 
 @dataclass
@@ -37,6 +38,7 @@ PROFILE_DECAY_INTERVAL_SECONDS = 30 * 24 * 60 * 60
 PROFILE_ACTIVE_RECALL_MIN_CONFIDENCE = 0.5
 
 
+@schema_dirty
 def upsert_user_profile(
     user_id: str,
     schema_path: str,
@@ -169,6 +171,7 @@ def list_user_profiles(user_id: str, *, status: str | None = None, limit: int = 
     return [_profile_to_api(item) for item in items[:safe_limit]]
 
 
+@schema_dirty
 def set_user_profile_status(user_id: str, schema_path: str, status: str) -> dict[str, object]:
     status = _normalise_profile_status(status)
     now = time()
@@ -225,6 +228,7 @@ def delete_user_profile(user_id: str, schema_path: str) -> bool:
     return deleted
 
 
+@schema_dirty
 def replace_user_profile_value(
     user_id: str,
     schema_path: str,
@@ -303,6 +307,7 @@ def replace_user_profile_value(
     return _profile_to_api(item)
 
 
+@schema_dirty
 def update_user_profile_summary(
     user_id: str,
     schema_path: str,
@@ -499,7 +504,7 @@ def _merge_profile_value(schema_path: str, existing_value: str, new_value: str) 
 
 
 def _split_items(value: str) -> list[str]:
-    return [item.strip() for item in re.split(r"[、,，;；/和与]+", value or "") if item.strip()]
+    return [item.strip() for item in re.split(r"[、,，;；]+", value or "") if item.strip()]
 
 
 def _normalise_profile_status(status: str) -> str:
@@ -556,3 +561,74 @@ def _effective_profile_confidence(profile: UserProfile, now: float | None = None
 
 def _clamp_confidence(value: float, upper: float = 1.0) -> float:
     return round(min(upper, max(0.0, float(value))), 4)
+
+
+# Compatibility API: public commands write facts; legacy rows are ID anchors
+# and migration inputs only. Keep profile:<id> URLs and evidence FKs stable.
+_legacy_list_user_profiles = list_user_profiles
+_legacy_get_user_profile = get_user_profile
+_legacy_upsert_user_profile = upsert_user_profile
+_legacy_set_user_profile_status = set_user_profile_status
+_legacy_replace_user_profile_value = replace_user_profile_value
+_legacy_update_user_profile_summary = update_user_profile_summary
+_legacy_delete_user_profile = delete_user_profile
+_legacy_apply_profile_decay = apply_profile_decay
+
+
+def list_user_profiles(user_id, *, status=None, limit=200):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return fact_store.project_profiles(user_id, status=status, limit=limit)
+    return _legacy_list_user_profiles(user_id, status=status, limit=limit)
+
+
+def get_user_profile(user_id, schema_path):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return next((p for p in list_user_profiles(user_id, limit=500) if p['schemaPath'] == schema_path), None)
+    return _legacy_get_user_profile(user_id, schema_path)
+
+
+def upsert_user_profile(user_id, schema_path, value, *, summary='', confidence=.8, status='active'):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return fact_store.write_slot(user_id, schema_path, value, confidence=confidence, status=_normalise_profile_status(status))
+    return _legacy_upsert_user_profile(user_id, schema_path, value, summary=summary, confidence=confidence, status=status)
+
+
+def set_user_profile_status(user_id, schema_path, status):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return fact_store.write_slot(user_id, schema_path, status=_normalise_profile_status(status))
+    return _legacy_set_user_profile_status(user_id, schema_path, status)
+
+
+def replace_user_profile_value(user_id, schema_path, value, *, summary=None, confidence=None, status='active'):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return fact_store.write_slot(user_id, schema_path, value, replace=True, confidence=confidence or .95,
+                                     status=_normalise_profile_status(status))
+    return _legacy_replace_user_profile_value(user_id, schema_path, value, summary=summary, confidence=confidence, status=status)
+
+
+def update_user_profile_summary(user_id, schema_path, summary, *, confidence_boost=0.0):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        return get_user_profile(user_id, schema_path) or {}  # Derived text cannot change facts or confidence.
+    return _legacy_update_user_profile_summary(user_id, schema_path, summary, confidence_boost=confidence_boost)
+
+
+def delete_user_profile(user_id, schema_path):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        fact_store.purge_slot(user_id, schema_path)
+    return _legacy_delete_user_profile(user_id, schema_path)
+
+
+def apply_profile_decay(*, user_id=None, now=None):
+    from app.memory import fact_store
+    if fact_store.enabled():
+        # Confidence is derived at read time from fact confirmation and usage.
+        # Never mutate retired profile values or double-apply decay.
+        return {'updated': 0, 'expired': 0}
+    return _legacy_apply_profile_decay(user_id=user_id, now=now)

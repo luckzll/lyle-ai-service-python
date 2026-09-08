@@ -152,7 +152,8 @@ def rag_agent_node(state: MultiAgentState) -> MultiAgentState:
 
 def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
-    has_work_summary_tool = _has_successful_tool(state["tool_results"], "work_summary")
+    from app.memory.fact_store import enabled as facts_enabled
+    has_work_summary_tool = _has_successful_tool(state["tool_results"], "work_summary") and not facts_enabled()
     memory_context = "" if has_work_summary_tool else state["memory_context"]
     writer_tool_context = "\n\n".join(
         item for item in [state["tool_context"], state["supplemental_context"]] if item

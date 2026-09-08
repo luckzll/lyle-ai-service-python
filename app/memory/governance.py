@@ -777,6 +777,10 @@ def _profile_confirmed_by_user(user_id: str, profile_id: int) -> bool:
 
 
 def _usage_description(schema_path: str) -> str:
+    from app.memory.recall_policy import ACTION_CONSTRAINT_PATHS
+
+    if schema_path in ACTION_CONSTRAINT_PATHS:
+        return "启用且可靠时，Lyle 会优先使用这条记忆，遵循你的沟通偏好或互动边界。"
     if schema_path.startswith("preferences.visual"):
         return "Lyle 会在图片、视觉风格和人物形象相关的问题中使用它。"
     if schema_path.startswith("preferences.communication") or schema_path == "preferences.output_style":
@@ -834,6 +838,9 @@ def _iso(value: object) -> str | None:
 
 
 def _disable_stale_structured_memory(user_id: str, schema_path: str) -> None:
+    from app.memory.fact_store import enabled as facts_enabled
+    if facts_enabled():
+        return  # Retired rows are never used as current facts; no dual writes.
     from app.memory.store import _load_all_structured, set_structured_memory_status
 
     for item in _load_all_structured(user_id):
@@ -1210,7 +1217,12 @@ def _execute_purge_job(job: dict[str, object]) -> None:
     profile = _profile_for_memory_id(user_id, memory_id)
     schema_path = str(profile.get("schemaPath") or "") if profile else ""
     steps = dict(job.get("steps") or {})
+    schema_path = schema_path or str(steps.get('schemaPath') or '')
+    steps['schemaPath'] = schema_path
     from app.memory.store import _load_all_structured, purge_structured_memory
+    from app.memory.fact_store import enabled as facts_enabled
+    if facts_enabled():
+        from app.memory.store import _legacy_load_all_structured as _load_all_structured
 
     if not steps.get("structured"):
         for item in _load_all_structured(user_id):
@@ -1239,6 +1251,9 @@ def _execute_purge_job(job: dict[str, object]) -> None:
         _purge_user_memory_cache(user_id)
         steps["cache"] = "SUCCEEDED"
         _update_purge_job(user_id, job_id, steps=steps)
+    # Purge derived snapshots as well, including retained older versions.
+    from app.memory.schema_store import purge_schema_history
+    purge_schema_history(user_id)
     steps["verified"] = "SUCCEEDED"
     _update_purge_job(
         user_id, job_id, status="SUCCEEDED", steps=steps, completed_at=time(), next_attempt_at=None

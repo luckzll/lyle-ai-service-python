@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -269,6 +270,20 @@ class Settings(BaseSettings):
     memory_compression_trigger_limit: int = 24
     # 记忆召回 top_k 数量。
     memory_recall_limit: int = 6
+    memory_schema_enabled: bool = True
+    memory_facts_enabled: bool = True
+    memory_core_max_chars: int = Field(default=1200, ge=256, le=4000)
+    memory_schema_build_with_llm: bool = True
+    memory_schema_worker_interval: int = Field(default=3, ge=1, le=300)
+    memory_schema_build_lease_seconds: int = Field(default=180, ge=30, le=3600)
+    memory_schema_history_limit: int = Field(default=3, ge=1, le=10)
+    memory_schema_build_input_max_chars: int = Field(default=64000, ge=1000, le=256000)
+    memory_schema_model_max_tokens: int = Field(default=4096, ge=256, le=16000)
+    memory_schema_small_max_chars: int = Field(default=3000, ge=256, le=16000)
+    memory_schema_agent_max_steps: int = Field(default=4, ge=1, le=8)
+    memory_schema_agent_read_max_chars: int = Field(default=8000, ge=1000, le=32000)
+    memory_light_context_max_chars: int = Field(default=2400, ge=256, le=32000)
+    memory_full_context_max_chars: int = Field(default=8000, ge=256, le=64000)
     # 开启后 Recall Planner 会先用意图模型选择画像路径，失败时回退规则召回。
     recall_planner_llm_enabled: bool = True
     # 记忆接口导出给前端时，单条短期记忆内容的最大长度。
