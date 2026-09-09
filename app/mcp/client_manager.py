@@ -180,8 +180,8 @@ async def _session(server: dict[str, Any]) -> AsyncIterator[Any]:
 
 def infer_tool_risk(name: str, description: str = "") -> str:
     text = f"{name} {description}".lower()
-    dangerous = ("delete", "remove", "drop", "reset", "payment", "permission", "revoke", "destroy")
-    write_high = ("push", "publish", "deploy", "merge", "send_email", "send_message")
+    dangerous = ("drop", "reset", "payment", "permission", "revoke", "destroy", "支付", "权限")
+    write_high = ("delete", "remove", "删除", "批量", "batch", "send", "发邮件", "push", "publish", "deploy", "merge")
     write_medium = ("create", "update", "write", "edit", "add", "set", "upload", "move", "rename")
     read_only = ("get", "list", "read", "search", "find", "fetch", "query", "status", "inspect", "view")
     if any(token in text for token in dangerous):

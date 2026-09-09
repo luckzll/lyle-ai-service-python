@@ -9,7 +9,7 @@ from app.rag.store import storage_object_belongs_to_user
 
 logger = logging.getLogger(__name__)
 
-PATH_PATTERN = re.compile(r"(s3://\S+|file://\S+|/[\w\-./%\u4e00-\u9fff]+)")
+PATH_PATTERN = re.compile(r"(s3://\S+|file://\S+|[A-Za-z]:[\\/]\S+|/[\w\-./%\u4e00-\u9fff]+)")
 
 
 def parse_file_from_question(question: str, user_id: str | None = None) -> dict[str, object]:
@@ -20,6 +20,10 @@ def parse_file_from_question(question: str, user_id: str | None = None) -> dict[
             "content": "没有找到可解析的文件路径。请在问题中包含 file://、s3:// 或本地绝对路径。",
         }
 
+    return parse_file(storage_path, user_id)
+
+
+def parse_file(storage_path: str, user_id: str | None = None) -> dict[str, object]:
     if not _is_allowed_storage_path(storage_path, user_id):
         logger.warning("file_parse rejected path outside whitelist: %s", storage_path)
         return {

@@ -14,7 +14,11 @@ def run_tool_agent(
     conversation_id: str | None,
     question: str,
     use_tools: bool,
+    knowledge_base_ids: list[str] | None = None,
 ) -> dict[str, object]:
+    from app.agents.native_tool_loop import available, run_native_loop
+    if use_tools and settings.tool_agent_enabled and available():
+        return run_native_loop(user_id, conversation_id, question, knowledge_base_ids)
     decision = decide_tool_use(user_id, conversation_id, question, use_tools)
     if not decision["should_call_tools"]:
         return {

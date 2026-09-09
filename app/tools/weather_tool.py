@@ -57,6 +57,20 @@ def get_weather_from_question(question: str) -> dict[str, object]:
             "content": "请说明要查询天气的城市，比如“今天上海天气怎么样”。",
         }
 
+    return get_weather(location)
+
+
+def get_weather(location: str, requested_date: str | None = None) -> dict[str, object]:
+    result = _get_weather(location)
+    if requested_date:
+        dates = (result.get("weather", {}).get("daily", {}).get("time") or [])
+        if requested_date not in dates:
+            return {"ok": False, "content": f"当前预报不覆盖 {requested_date}，请指定预报范围内的日期。"}
+        result = {**result, "requestedDate": requested_date}
+    return result
+
+
+def _get_weather(location: str) -> dict[str, object]:
     cache_key = location.lower()
     cached = _get_cached(cache_key)
     if cached is not None:

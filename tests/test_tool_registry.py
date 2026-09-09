@@ -564,13 +564,14 @@ def test_image_generate_uploads_to_tos(monkeypatch):
 
 
 def test_image_generate_falls_back_to_tosutil(monkeypatch):
+    import sys
     monkeypatch.setattr(settings, "ark_api_key", "fake-key")
     monkeypatch.setattr(settings, "image_model_name", "doubao-seedream-test")
     monkeypatch.setattr(settings, "generated_image_storage", "tos")
     monkeypatch.setattr(settings, "tos_access_key_id", "")
     monkeypatch.setattr(settings, "tos_secret_access_key", "")
     monkeypatch.setattr(settings, "tos_endpoint", "")
-    monkeypatch.setattr(settings, "tosutil_path", "/bin/echo")
+    monkeypatch.setattr(settings, "tosutil_path", sys.executable)
     monkeypatch.setattr(settings, "tos_bucket", "common-prod-object")
     monkeypatch.setattr(settings, "tos_save_path_head", "zl-dev/")
     monkeypatch.setattr(settings, "tos_public_url_head", "https://common-prod-object.tos-cn-shanghai.volces.com/")
@@ -597,7 +598,7 @@ def test_image_generate_falls_back_to_tosutil(monkeypatch):
 
     assert result["ok"] is True
     assert result["imageUrl"].startswith("https://common-prod-object.tos-cn-shanghai.volces.com/zl-dev/")
-    assert commands[0][0] == "/bin/echo"
+    assert commands[0][0] == sys.executable
     assert commands[0][1] == "cp"
     assert commands[0][3].startswith("tos://common-prod-object/zl-dev/")
 

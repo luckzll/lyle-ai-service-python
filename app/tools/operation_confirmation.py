@@ -69,6 +69,10 @@ def create_pending_operation(
         conn.commit()
 
     operation = _operation_row(row)
+    if operation.get("status") in {"executing", "rejected"}:
+        return {"ok": False, "requiresConfirmation": False, "operation": operation,
+                "needsClarification": True, "idempotentReplay": True,
+                "content": "该操作正在执行或已被拒绝，不会重新执行；请查看操作记录。"}
     already_confirmed = operation.get("status") == "confirmed"
     already_failed = operation.get("status") == "failed"
     return {
@@ -117,6 +121,9 @@ def confirm_pending_operation(user_id: str, operation_id: int) -> dict[str, obje
     now = datetime.now(UTC)
     with postgres_connection() as conn:
         operation = _get_operation_for_update(conn, user_id, operation_id)
+        if str(operation.get("operationType", "")).startswith("mcp.invoke"):
+            conn.commit()
+            return _confirm_external_operation(user_id, operation_id)
         if operation.get("status") in {"confirmed", "failed"}:
             conn.commit()
             return {
@@ -247,6 +254,10 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
     payload = operation.get("payload") if isinstance(operation.get("payload"), dict) else {}
     conversation_id = str(operation.get("conversationId") or "") or None
 
+    if operation_type in {"mcp.invoke", "mcp.invoke.second"}:
+        from app.tools.agent_mcp import execute_confirmed
+        return execute_confirmed(user_id, operation)
+
     if operation_type == "todo.create":
         from app.tools.task_tool import create_todo
 
@@ -331,6 +342,36 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
         error_code="PARAM_MISSING",
         retryable=False,
     )
+
+
+def _confirm_external_operation(user_id: str, operation_id: int) -> dict[str, object]:
+    """Commit the claim BEFORE remote I/O. Uncertain outcomes must never be replayed.
+
+    Remote MCP has no universal idempotency contract. A crash leaves `executing`,
+    requiring reconciliation; it does not silently send/delete a second time.
+    """
+    with postgres_connection() as conn:
+        operation = _get_operation_for_update(conn, user_id, operation_id)
+        if operation["status"] != "pending":
+            return {"operation": operation, "result": operation.get("result") or {
+                "ok": False, "content": "该操作已领取或已处理；如结果未知，请核对外部系统，不能重复执行。"
+            }, "idempotentReplay": True}
+        conn.execute("UPDATE agent_pending_operation SET status = 'executing', updated_at = now() WHERE user_id = %s AND id = %s",
+                     (user_id, operation_id))
+        conn.commit()
+    try:
+        result = _execute_operation(user_id, operation)
+    except Exception:
+        result = {"ok": False, "content": "外部操作结果未知或失败，请核对外部系统后处理；不会自动重试。", "retryable": False}
+    with postgres_connection() as conn:
+        conn.execute("""UPDATE agent_pending_operation SET status = %s, result = %s::jsonb,
+                     updated_at = now(), confirmed_at = now() WHERE user_id = %s AND id = %s AND status = 'executing'""",
+                     ("confirmed" if result.get("ok") else "failed", json.dumps(result, ensure_ascii=False), user_id, operation_id))
+        conn.commit()
+    audit_tool_call(tool_name=str(operation["toolName"]), user_id=user_id,
+                    conversation_id=str(operation.get("conversationId") or ""), question="确认外部操作",
+                    ok=bool(result.get("ok")), content=str(result.get("content") or ""), elapsed_ms=0)
+    return {"operation": get_pending_operation(user_id, operation_id), "result": result}
 
 
 def _operation_row(row: tuple[object, ...]) -> dict[str, object]:

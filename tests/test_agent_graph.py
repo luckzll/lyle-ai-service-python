@@ -148,7 +148,7 @@ def test_multi_agent_graph_rewrites_when_review_fails(monkeypatch):
 
     monkeypatch.setattr(
         "app.graphs.multi_agent_graph.run_tool_agent",
-        lambda user_id, conversation_id, question, use_tools: {
+        lambda user_id, conversation_id, question, use_tools, knowledge_base_ids=None: {
             "tool_results": [],
             "tool_context": "",
             "selected_tools": [],
@@ -220,7 +220,7 @@ def test_multi_agent_graph_runs_tool_agent(monkeypatch):
     )
     monkeypatch.setattr(
         "app.graphs.multi_agent_graph.run_tool_agent",
-        lambda user_id, conversation_id, question, use_tools: {
+        lambda user_id, conversation_id, question, use_tools, knowledge_base_ids=None: {
             "tool_results": [{"tool": "health_check", "ok": True, "content": "ok"}],
             "tool_context": "工具调用结果：health_check ok",
             "selected_tools": ["health_check"],
@@ -494,7 +494,7 @@ def test_prepare_context_uses_full_path_for_tool_signal(monkeypatch):
     )
     monkeypatch.setattr(
         "app.graphs.multi_agent_graph.run_tool_agent",
-        lambda user_id, conversation_id, question, use_tools: called.update({"tool": True}) or {
+        lambda user_id, conversation_id, question, use_tools, knowledge_base_ids=None: called.update({"tool": True}) or {
             "tool_results": [{"tool": "todo", "ok": True, "content": "ok"}],
             "tool_context": "todo ok",
             "selected_tools": ["todo"],
