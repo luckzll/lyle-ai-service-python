@@ -209,6 +209,7 @@ def tool_agent_node(state: MultiAgentState) -> MultiAgentState:
         state["conversation_id"],
         state["question"],
         bool(state["supervisor"].get("use_tools", False)),
+        knowledge_base_ids=state["knowledge_base_ids"],
     )
     tool_results = result.get("tool_results") or []
     decision = result.get("decision") or {}

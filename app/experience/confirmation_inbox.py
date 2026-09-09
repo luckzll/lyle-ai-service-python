@@ -59,7 +59,8 @@ def _display(row: tuple[Any, ...]) -> dict[str, Any]:
         "pendingOperationId": row[0], "actionTitle": row[4], "toolName": row[1], "operationType": row[2],
         "riskLevel": risk, "status": row[6], "reason": row[7] or "来自 Lyle 的建议操作。",
         "impactResources": [str(payload.get(key)) for key in ("projectId", "taskId", "path", "repo") if payload.get(key) is not None] or ["已授权范围"],
-        "reversible": risk != "high", "requiresSecondConfirmation": risk == "high",
+        "reversible": risk not in {"high", "write_high", "dangerous"} and not str(row[2]).startswith("mcp.invoke"),
+        "requiresSecondConfirmation": risk in {"high", "write_high"},
         "beforeAfter": payload.get("diff") or None, "source": f"会话 {row[10]}" if row[10] else "Lyle 执行建议",
         "createdAt": row[8].isoformat(), "updatedAt": row[9].isoformat(),
     }

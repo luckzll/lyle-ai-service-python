@@ -1,6 +1,7 @@
 import os
 import socket
 import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -258,7 +259,7 @@ def test_mcp_stdio_client_discovers_and_invokes_real_server():
     config_ref = normalize_config_ref(
         "stdio",
         {
-            "command": ".venv312/bin/python",
+            "command": sys.executable,
             "args": ["tests/fixtures/echo_mcp_server.py"],
             "cwd": ".",
         },
@@ -281,7 +282,7 @@ def test_mcp_streamable_http_client_discovers_and_invokes_real_server():
         port = sock.getsockname()[1]
     env = {**os.environ, "MCP_TEST_PORT": str(port)}
     process = subprocess.Popen(
-        [".venv312/bin/python", "tests/fixtures/echo_mcp_http_server.py"],
+        [sys.executable, "tests/fixtures/echo_mcp_http_server.py"],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

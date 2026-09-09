@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     # 开启后 Supervisor 会按问题判断是否调用工具。
     tool_agent_enabled: bool = True
     tool_router_llm_enabled: bool = True
+    native_tool_calling_enabled: bool = True
+    native_tool_calling_strict: bool = False
+    agent_loop_enabled: bool = True
+    agent_loop_max_steps: int = Field(default=5, ge=1, le=20)
+    agent_loop_max_tool_calls: int = Field(default=8, ge=1, le=40)
+    agent_loop_max_retries: int = Field(default=1, ge=0, le=2)
+    agent_loop_max_no_progress: int = Field(default=2, ge=1, le=5)
+    agent_loop_max_seconds: int = Field(default=120, ge=1, le=600)
+    agent_loop_mcp_enabled: bool = True
     tool_router_context_max_chars: int = 3000
     tool_router_confidence_threshold: float = 0.65
     # 允许调用的工具白名单，逗号分隔。生产环境建议只开放明确需要的工具。

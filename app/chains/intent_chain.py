@@ -1,4 +1,6 @@
 import json
+from typing import Literal
+from pydantic import BaseModel, ConfigDict
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -7,6 +9,11 @@ from app.llm.tasks.intent_model import build_intent_task_model, is_intent_model_
 
 
 MEMORY_KEYWORDS = ["我之前", "记得", "记忆", "我喜欢", "我的"]
+
+
+class IntentDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    intent: Literal["memory", "knowledge", "chat"]
 
 
 def classify_intent(question: str, knowledge_base_ids: list[str]) -> str:
@@ -27,7 +34,15 @@ def classify_intent(question: str, knowledge_base_ids: list[str]) -> str:
             "用户问题：{question}\n是否选择知识库：{has_knowledge_base}\n返回格式：{{\"intent\":\"chat\"}}",
         ),
     ])
-    chain = prompt | build_intent_task_model() | StrOutputParser()
+    from app.core.config import settings
+    model = build_intent_task_model()
+    if settings.native_tool_calling_enabled:
+        try:
+            classifier = prompt | model.with_structured_output(IntentDecision, method="function_calling")
+            return classifier.invoke({"question": question, "has_knowledge_base": bool(knowledge_base_ids)}).intent
+        except Exception:
+            return classify_intent_by_rule(question, knowledge_base_ids)
+    chain = prompt | model | StrOutputParser()
     try:
         content = chain.invoke({
             "question": question,

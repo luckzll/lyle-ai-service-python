@@ -31,6 +31,7 @@ class ToolSpec:
 
 
 def list_available_tools() -> list[dict[str, object]]:
+    from app.tools.slots import ARGUMENT_MODELS
     allowed = _allowed_tool_names()
     return [
         {
@@ -40,6 +41,7 @@ def list_available_tools() -> list[dict[str, object]]:
             "riskLevel": spec.risk_policy.risk_level,
             "requiresConfirmation": spec.risk_policy.requires_confirmation,
             "riskDescription": spec.risk_policy.description,
+            "inputSchema": ARGUMENT_MODELS[spec.name].model_json_schema() if spec.name in ARGUMENT_MODELS else {},
         }
         for spec in _tool_specs().values()
     ]
