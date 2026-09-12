@@ -1,9 +1,11 @@
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import replace
 from typing import Iterator
 
 from app.core.config import settings
+from app.rag.config import RAG_FIELDS, RagConfig, default_rag_config, normalize_rag_config
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +26,21 @@ _chat_model_override: ContextVar[tuple[str, str] | None] = ContextVar(
     default=None,
 )
 
+# Review policy must stay stable for each stream, including concurrent turns
+# with different overrides. Never mutate the process-wide review switches.
+_review_override: ContextVar[tuple[bool, int] | None] = ContextVar("lyle_review_override", default=None)
+
+
+def current_review_config() -> tuple[bool, int]:
+    return _review_override.get() or (settings.reviewer_enabled, settings.reviewer_max_retry)
+
+
+_rag_override: ContextVar[RagConfig | None] = ContextVar("lyle_rag_config", default=None)
+
+
+def current_rag_config() -> RagConfig:
+    return _rag_override.get() or default_rag_config()
+
 # 允许通过请求 aiConfig 临时覆盖的配置：仅限模型行为 / RAG 质量 / 数值上限类字段。
 CONFIG_FIELD_MAP = {
     "REVIEWER_ENABLED": "reviewer_enabled",
@@ -39,6 +56,15 @@ CONFIG_FIELD_MAP = {
     "RAG_MULTI_QUERY_COUNT": "rag_multi_query_count",
     "RAG_CONTEXT_TOP_K": "rag_context_top_k",
     "RAG_SUFFICIENCY_CHECK_ENABLED": "rag_sufficiency_check_enabled",
+    "RAG_OPTIMIZED_RETRIEVAL_ENABLED": "rag_optimized_retrieval_enabled",
+    "RAG_PARALLEL_WORKERS": "rag_parallel_workers",
+    "RAG_RETRIEVAL_CANDIDATE_LIMIT": "rag_retrieval_candidate_limit",
+    "RAG_FUSION_MODE": "rag_fusion_mode",
+    "RAG_ADAPTIVE_RETRIEVAL_ENABLED": "rag_adaptive_retrieval_enabled",
+    "RAG_GLOBAL_RERANK_LIMIT": "rag_global_rerank_limit",
+    "RAG_AUXILIARY_MODEL_ENABLED": "rag_auxiliary_model_enabled",
+    "RAG_CANDIDATE_CACHE_ENABLED": "rag_candidate_cache_enabled",
+    "RAG_CONTEXTUAL_QUERY_ENABLED": "rag_contextual_query_enabled",
     "TOOL_WEB_SEARCH_PROVIDER": "tool_web_search_provider",
     "TOOL_WEB_SEARCH_TOP_K": "tool_web_search_top_k",
     "TOOL_FILE_PARSE_MAX_CHARS": "tool_file_parse_max_chars",
@@ -65,23 +91,45 @@ BLOCKED_CONFIG_KEYS = {
 
 @contextmanager
 def temporary_ai_config(config: dict[str, str] | None) -> Iterator[None]:
-    if not config:
-        yield
-        return
+    config = config or {}
 
     old_values: dict[str, object] = {}
     model_token = None
+    review_token = None
+    rag_token = None
     previous_model_override = _chat_model_override.get()
+    previous_review_override = _review_override.get()
+    previous_rag_override = _rag_override.get()
     try:
         model_override = _validated_chat_model_override(config)
         if model_override is not None:
             model_token = _chat_model_override.set(model_override)
 
+        review_enabled, review_retry = current_review_config()
+        if "REVIEWER_ENABLED" in config or "REVIEWER_MAX_RETRY" in config:
+            review_token = _review_override.set((
+                _coerce_value(config["REVIEWER_ENABLED"], review_enabled) if "REVIEWER_ENABLED" in config else review_enabled,
+                _coerce_value(config["REVIEWER_MAX_RETRY"], review_retry) if "REVIEWER_MAX_RETRY" in config else review_retry,
+            ))
+
+        rag_config = current_rag_config()
+        rag_updates = {
+            CONFIG_FIELD_MAP[key]: _coerce_value(value, getattr(rag_config, CONFIG_FIELD_MAP[key]))
+            for key, value in config.items() if CONFIG_FIELD_MAP.get(key) in RAG_FIELDS
+        }
+        # Freeze even when no override was requested so child workers see the
+        # same policy throughout this request.
+        rag_token = _rag_override.set(normalize_rag_config(replace(rag_config, **rag_updates)))
+
         for key, value in config.items():
+            if key in {"REVIEWER_ENABLED", "REVIEWER_MAX_RETRY"}:
+                continue
             if key in BLOCKED_CONFIG_KEYS:
                 logger.warning("Ignoring security-sensitive aiConfig key: %s", key)
                 continue
             field = CONFIG_FIELD_MAP.get(key)
+            if field in RAG_FIELDS:
+                continue
             if not field or not hasattr(settings, field):
                 continue
             old_values[field] = getattr(settings, field)
@@ -90,6 +138,16 @@ def temporary_ai_config(config: dict[str, str] | None) -> Iterator[None]:
     finally:
         for field, value in old_values.items():
             setattr(settings, field, value)
+        if rag_token is not None:
+            try:
+                _rag_override.reset(rag_token)
+            except ValueError:
+                _rag_override.set(previous_rag_override)
+        if review_token is not None:
+            try:
+                _review_override.reset(review_token)
+            except ValueError:
+                _review_override.set(previous_review_override)
         if model_token is not None:
             try:
                 _chat_model_override.reset(model_token)

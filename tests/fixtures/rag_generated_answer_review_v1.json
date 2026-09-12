@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "review_method": "Direct assistant review against frozen source text and post-generation review_only labels. Not blind, not an external model judge, and not automatic keyword-match correctness.",
+  "limitations": "9 selected diagnostic cases, one non-thinking Qwen answer per variant. Not production thinking-mode quality or latency evidence.",
+  "generator_metadata": {
+    "kind": "metadata",
+    "schema_version": 1,
+    "model": "qwen3.5-flash",
+    "provider": "qwen",
+    "fixture_sha256": "12cd7ae7265158ec60aa5adc54ca75567fda420da286a7cc1e1cf32c77cf8f15",
+    "input_sha256": "2e31514e937be5176b02aa231ecdae7d0667c90119e145ee9ebee7ddc27b4b23",
+    "started_at": "2026-09-12T13:02:40.837239+00:00",
+    "case_count": 9,
+    "temperature": 0,
+    "max_output_tokens": 768,
+    "max_retries": 0,
+    "thinking_disabled_for_evaluation": true,
+    "prompt_version": "lyle-agent-v1",
+    "limits": "Synthetic diagnostic cases, one generation per variant; not production quality or latency proof."
+  },
+  "canonical_input_sha256_verified": true,
+  "raw_output_sha256": "7f792f3cc2a6904fcc894c15fbec10918ad8b66f3096a32e23a8b6699cc58cf5",
+  "summary": {
+    "baseline": {
+      "cases": 9,
+      "classification_counts": {
+        "grounded_complete": 5,
+        "core_fact_with_unsupported_claims": 2,
+        "retrieval_miss_with_abstention": 1,
+        "correct_no_answer_abstention": 1
+      },
+      "answerable_core_facts_covered": 7,
+      "answerable_cases": 8,
+      "kb_leak_observed": 0,
+      "elapsed_ms_p50": 1402.56,
+      "elapsed_ms_p95": 2711.808
+    },
+    "optimized": {
+      "cases": 9,
+      "classification_counts": {
+        "grounded_complete": 5,
+        "core_fact_with_unsupported_claims": 2,
+        "retrieval_miss_with_abstention": 1,
+        "correct_no_answer_abstention": 1
+      },
+      "answerable_core_facts_covered": 7,
+      "answerable_cases": 8,
+      "kb_leak_observed": 0,
+      "elapsed_ms_p50": 1345.29,
+      "elapsed_ms_p95": 2613.21
+    }
+  },
+  "rows": [
+    {
+      "case_id": "R011",
+      "variant": "baseline",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确说明关页不会取消后台任务，并按 turnId 恢复执行状态/已生成内容。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R011",
+      "variant": "optimized",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确说明关页不会取消后台任务，并按 turnId 恢复执行状态/已生成内容。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R013",
+      "variant": "optimized",
+      "classification": "core_fact_with_unsupported_claims",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "覆盖相关性不等于要点覆盖的核心事实，但补充了没有依据的缓存失效后仍使用旧结果的因果解释。",
+      "unsupported_claims": [
+        {
+          "answer_excerpt": "相关缓存会立即失效，但系统可能仍基于旧缓存返回结果",
+          "source_key": "kb-guide/cache#1",
+          "source_excerpt": "文档新增、替换或删除时会立即使相关缓存失效。",
+          "assessment": "明确补充了原文不支持的失效后读旧缓存机制。"
+        },
+        {
+          "answer_excerpt": "对于未明确提及的细节（如具体修复范围、套餐调整情况等）",
+          "source_key": "kb-guide/release#2",
+          "source_excerpt": "只修复连接断开后的恢复状态，没有调整套餐额度。",
+          "assessment": "把当前已给出的版本修复/套餐说明举为未明确提及的细节，没有忠实反映输入。"
+        }
+      ],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R013",
+      "variant": "baseline",
+      "classification": "core_fact_with_unsupported_claims",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "覆盖相关性不等于要点覆盖的核心事实，但补充了没有依据的缓存失效后仍使用旧结果的因果解释。",
+      "unsupported_claims": [
+        {
+          "answer_excerpt": "相关缓存可能已失效，导致基于旧数据的高相关性结果无法反映最新完整信息",
+          "source_key": "kb-guide/cache#1",
+          "source_excerpt": "文档新增、替换或删除时会立即使相关缓存失效。",
+          "assessment": "原文没有说失效后继续使用旧缓存；把失效本身解释为陈旧数据原因没有依据。"
+        }
+      ],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R014",
+      "variant": "baseline",
+      "classification": "core_fact_with_unsupported_claims",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确建议倒排索引减少扫描，但把统计重复计算解释为系统误判全量重扫，并提出清理冗余，原文不支持该机制。",
+      "unsupported_claims": [
+        {
+          "answer_excerpt": "会导致系统误判需要全量重扫，需清理冗余数据以确保统计准确",
+          "source_key": "kb-guide/service#3",
+          "source_excerpt": "关键词检索慢时应检查文档统计是否被重复计算。",
+          "assessment": "原文描述重复计算开销，没有误判全量重扫或清理冗余数据的机制/操作依据。"
+        }
+      ],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R014",
+      "variant": "optimized",
+      "classification": "core_fact_with_unsupported_claims",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确建议倒排索引减少扫描，但把统计重复计算解释为系统误判全量重扫，并提出清理冗余，原文不支持该机制。",
+      "unsupported_claims": [
+        {
+          "answer_excerpt": "会导致系统误判需要全量重扫，需清理冗余统计信息",
+          "source_key": "kb-guide/service#3",
+          "source_excerpt": "关键词检索慢时应检查文档统计是否被重复计算。",
+          "assessment": "同旧版：将重复计算推断成系统误判并建议清理统计，没有资料支持。"
+        }
+      ],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R020",
+      "variant": "optimized",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": true,
+      "assessment": "结合删除知识库的历史，正确回答14天回收期及管理员可恢复；未与30天备份保留混淆。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R020",
+      "variant": "baseline",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": true,
+      "assessment": "结合删除知识库的历史，正确回答14天回收期及管理员可恢复；未与30天备份保留混淆。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R021",
+      "variant": "baseline",
+      "classification": "retrieval_miss_with_abstention",
+      "expected_core_facts_covered": false,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": true,
+      "assessment": "历史明确为2.4.1，正确变更证据确实存在于冻结语料，但新旧检索均未给模型。两边依据当前上下文不足拒答，没有编造更新项；仍未完成用户的有答案问题。不能据此断言整个知识库没有该信息。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R021",
+      "variant": "optimized",
+      "classification": "retrieval_miss_with_abstention",
+      "expected_core_facts_covered": false,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": true,
+      "assessment": "历史明确为2.4.1，正确变更证据确实存在于冻结语料，但新旧检索均未给模型。两边依据当前上下文不足拒答，没有编造更新项；仍未完成用户的有答案问题。不能据此断言整个知识库没有该信息。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R024",
+      "variant": "optimized",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "两个精确条件均正确：单文件96 MB、每库320份。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R024",
+      "variant": "baseline",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "两个精确条件均正确：单文件96 MB、每库320份。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R033",
+      "variant": "baseline",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "覆盖导出旧索引清单、建立并校验新索引、校验失败用旧索引，以及切回上一版本镜像/匹配配置/数据库迁移回退。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R033",
+      "variant": "optimized",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "覆盖导出旧索引清单、建立并校验新索引、校验失败用旧索引，以及切回上一版本镜像/匹配配置/数据库迁移回退。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R038",
+      "variant": "optimized",
+      "classification": "correct_no_answer_abstention",
+      "expected_core_facts_covered": null,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "资料没有企业版年费，两边均明确不能回答，没有把月度额度误当价格或编造金额。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R038",
+      "variant": "baseline",
+      "classification": "correct_no_answer_abstention",
+      "expected_core_facts_covered": null,
+      "answer_fully_grounded_and_complete": false,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "资料没有企业版年费，两边均明确不能回答，没有把月度额度误当价格或编造金额。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R043",
+      "variant": "baseline",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确给出授权西区流沙项目73万元，没有使用另一个知识库中的同名项目预算。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    },
+    {
+      "case_id": "R043",
+      "variant": "optimized",
+      "classification": "grounded_complete",
+      "expected_core_facts_covered": true,
+      "answer_fully_grounded_and_complete": true,
+      "knowledge_base_leak_observed": false,
+      "history_provided": false,
+      "assessment": "正确给出授权西区流沙项目73万元，没有使用另一个知识库中的同名项目预算。",
+      "unsupported_claims": [],
+      "generated_inline_citation_score": "NOT_APPLICABLE; source-list citation locations are assessed in retrieval replay, not invented by this review"
+    }
+  ]
+}

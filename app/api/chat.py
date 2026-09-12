@@ -2,6 +2,8 @@ import json
 import logging
 import re
 import uuid
+import asyncio
+from threading import Lock
 from collections.abc import Iterator
 from time import perf_counter
 
@@ -9,9 +11,14 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
-from app.core.runtime_config import temporary_ai_config
+from app.core.runtime_config import current_review_config, temporary_ai_config
 from app.core.config import settings
+from app.rag.request_scope import request_retrieval_scope
 from app.agents.reviewer_agent import run_reviewer_agent
+from app.memory.overview import is_memory_overview_question
+from app.chat_progress import progress_scope, emit_step, sanitize_timings
+from app.streaming_response import HeartbeatStreamingResponse, heartbeat_frames
+from app.streaming_text import IncrementalAnswer, IncrementalReviewBlocked, streaming_policy
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
 from app.llm.client import generate_answer, stream_answer
 from app.chat_attachments import build_turn_attachment_context, message_with_image_attachments
@@ -98,7 +105,9 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
     )
     project_prompt_context = _project_prompt_context(project_context)
     try:
-        with temporary_ai_config(request.ai_config):
+        with temporary_ai_config(request.ai_config), request_retrieval_scope(
+            request.user_id, request.knowledge_base_ids, request.knowledgeScope, request.conversation_id
+        ):
             result = run_multi_agent_graph(
                 request.user_id,
                 request.conversation_id,
@@ -106,6 +115,8 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
                 request.knowledge_base_ids,
                 project_prompt_context,
             )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("LangGraph chat failed. user_id=%s conversation_id=%s", request.user_id, request.conversation_id)
         raise HTTPException(status_code=502, detail=f"LangGraph 调用失败：{exc}") from exc
@@ -220,20 +231,72 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
 
 @router.post("/chat/stream")
 def chat_stream(request: ChatRequest) -> StreamingResponse:
+    # Reject missing/invalid authorization before committing HTTP 200/SSE headers.
+    # The worker establishes the same scope again in its own execution context.
+    with request_retrieval_scope(
+        request.user_id, request.knowledge_base_ids, request.knowledgeScope, request.conversation_id
+    ):
+        pass
     usage_context = activate_model_call_context(request)
-    attachment_context, attachment_results = build_turn_attachment_context(request)
-    effective_image_message = message_with_image_attachments(request)
-    image_tool = _stream_image_tool(effective_image_message)
-    if image_tool:
-        return _image_chat_stream(
-            request,
-            image_tool,
-            attachment_context,
-            attachment_results,
-            usage_context=usage_context,
-        )
-
     request_started = perf_counter()
+    final_answer_holder: dict[str, str] = {}
+    sequence = 0
+    sequence_lock = Lock()
+    active_steps: dict[str, dict] = {}
+    image_background = []
+
+    def produce(publish):
+        def progress(event):
+            nonlocal sequence
+            with sequence_lock:
+                sequence += 1
+                payload = {**event, "turnId": request.turn_id, "sequence": sequence}
+                active_steps[str(event["step"])] = payload
+                publish(_sse("agent.step", payload))
+
+        set_model_call_context(usage_context)
+        with progress_scope(progress):
+            try:
+                attachment_context, attachment_results = build_turn_attachment_context(request)
+                image_tool = _stream_image_tool(message_with_image_attachments(request))
+                if image_tool:
+                    response = _image_chat_stream(request, image_tool, attachment_context,
+                                                  attachment_results, usage_context=usage_context)
+                    async def consume_image():
+                        async for frame in response.body_iterator:
+                            publish(frame.decode("utf-8") if isinstance(frame, bytes) else frame)
+                    asyncio.run(consume_image())
+                    if response.background:
+                        image_background.append(response.background)
+                    return
+                for frame in _text_chat_frames(request, usage_context, final_answer_holder,
+                                               attachment_context, attachment_results, request_started):
+                    publish(frame)
+            except Exception:
+                for step, value in list(active_steps.items()):
+                    if value.get("status") == "running":
+                        emit_step(step, "failed", summary="处理失败，请重试")
+                raise
+
+    def failure(exc):
+        logger.error("Chat stream failed. exception_type=%s", type(exc).__name__)
+        return _sse("error", {"message": _friendly_stream_error(exc)})
+
+    def write_memory_after_stream():
+        for task in image_background:
+            asyncio.run(task())
+        answer = final_answer_holder.get("answer")
+        if answer:
+            write_memory_in_background(request.user_id, request.conversation_id, request.message,
+                                       answer, request.ai_config, True, usage_context, request.source_message_id)
+
+    return HeartbeatStreamingResponse(heartbeat_frames(produce, failure),
+                             media_type="text/event-stream; charset=utf-8",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+                             background=BackgroundTask(write_memory_after_stream))
+
+
+def _text_chat_frames(request, usage_context, final_answer_holder, attachment_context, attachment_results, request_started):
     logger.info(
         "chat_stream timing start. user_id=%s conversation_id=%s message_chars=%s knowledge_bases=%s",
         request.user_id,
@@ -242,13 +305,16 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         len(request.knowledge_base_ids or []),
     )
     prepare_started = perf_counter()
-    with temporary_ai_config(request.ai_config):
+    with temporary_ai_config(request.ai_config), request_retrieval_scope(
+        request.user_id, request.knowledge_base_ids, request.knowledgeScope, request.conversation_id
+    ):
         state = prepare_multi_agent_context(
             request.user_id,
             request.conversation_id,
             request.message,
             request.knowledge_base_ids,
         )
+    prepare_duration_ms = int((perf_counter() - prepare_started) * 1000)
     logger.info(
         "chat_stream timing prepare_context_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs trace_agents=%s",
         request.user_id,
@@ -258,7 +324,12 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         [item.get("agent") for item in state.get("agent_trace", []) if isinstance(item, dict)],
     )
     contexts = state.get("contexts") or []
+    project_started = perf_counter()
+    emit_step("project_resolver", "running", summary="正在确认项目上下文")
     project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
+    emit_step("project_resolver", "completed" if project_context else "skipped",
+              duration_ms=int((perf_counter() - project_started) * 1000),
+              summary="已确认项目上下文" if project_context else "本轮无需项目上下文")
     project_prompt_context = _project_prompt_context(project_context)
     project_candidates = extract_project_candidates(request.message, project_context)
     plan_candidate = build_plan_candidate(request.message, project_context)
@@ -294,8 +365,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         memory_exclusion_reason="work_summary_tool_takes_priority" if has_work_summary_tool else "",
     )
 
-    final_answer_holder: dict[str, str] = {}
-
     def generate():
         set_model_call_context(usage_context)
         stream_started = perf_counter()
@@ -311,8 +380,32 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 "streaming": True,
             })
         review: dict[str, object] = {"approved": True, "reason": "streaming mode"}
+        incremental = None
+        first_model_token_ms = None
+        first_visible_ms = None
+        writer_started = perf_counter()
         try:
             with temporary_ai_config(request.ai_config):
+                review_enabled, review_max_retry = current_review_config()
+                policy = streaming_policy(
+                    reviewer_enabled=review_enabled, contexts=contexts,
+                    memory=state.get("memory") or {}, sufficiency=state.get("rag_sufficiency") or {},
+                    tool_results=tool_results, project_context=project_context,
+                    candidate_goals=project_candidates["candidateGoals"], candidate_plans=candidate_plans,
+                    memory_statement=_looks_like_explicit_memory_statement(request.message),
+                    memory_overview=is_memory_overview_question(request.message),
+                    has_attachments=bool(request.attachments),
+                )
+                def check_incremental(text):
+                    return bool(run_reviewer_agent(
+                        request.message, text, contexts, memory_context,
+                        memory=state.get("memory") or {}, rag_sufficiency=state.get("rag_sufficiency") or {},
+                        tool_results=tool_results, project_context=project_context,
+                        candidate_goals=project_candidates["candidateGoals"], candidate_plans=candidate_plans,
+                        model_review_enabled=False,
+                    ).get("approved", True))
+                emit_step("writer_agent", "running", summary=(
+                    "正在生成回答" if policy == "incremental" else "正在生成，完成内容检查后显示"))
                 overview_answer = build_memory_overview_answer(
                     request.message,
                     state.get("memory") if isinstance(state.get("memory"), dict) else {},
@@ -360,8 +453,20 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         )
                     else:
                         writer_started = perf_counter()
+                        if policy == "incremental":
+                            incremental = IncrementalAnswer(lambda text: _strip_unbacked_image_markdown(text, []), check_incremental)
                         for chunk in stream_answer(request.message, contexts, combined_context):
+                            if chunk and first_model_token_ms is None:
+                                first_model_token_ms = int((perf_counter() - writer_started) * 1000)
+                                logger.info("chat_stream timing model_first_token. elapsed_ms=%s", first_model_token_ms)
                             answer_parts.append(chunk)
+                            if incremental is not None:
+                                delta = incremental.push(chunk)
+                                if delta:
+                                    if first_visible_ms is None:
+                                        first_visible_ms = int((perf_counter() - request_started) * 1000)
+                                        logger.info("chat_stream timing first_delta. total_ms=%s source=incremental", first_visible_ms)
+                                    yield _sse("delta", {"text": delta})
                         logger.info(
                             "chat_stream timing writer_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs chunks=%s chars=%s",
                             request.user_id,
@@ -377,6 +482,16 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         artifact_text = final_answer[len(answer):]
                         if artifact_text:
                             answer = final_answer
+                writer_duration_ms = int((perf_counter() - writer_started) * 1000)
+                writer_timings = {"writer_ms": writer_duration_ms}
+                if first_model_token_ms is not None:
+                    writer_timings["writer_first_token_ms"] = first_model_token_ms
+                if first_visible_ms is not None:
+                    writer_timings["first_delta_ms"] = first_visible_ms
+                emit_step("writer_agent", "completed", duration_ms=writer_duration_ms,
+                          summary="回答生成完成", timings=writer_timings)
+                review_started = perf_counter()
+                emit_step("reviewer_agent", "running", summary="正在检查回答内容")
                 candidate_memories = _prepare_candidate_memories_for_response(
                     request.user_id,
                     request.conversation_id,
@@ -392,8 +507,9 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "streaming": True,
                     "deterministicMemoryOverview": used_memory_overview,
                     "writerInput": writer_input,
+                    "elapsedMs": writer_duration_ms,
+                    "timings": writer_timings,
                 })
-                review_started = perf_counter()
                 review = run_reviewer_agent(
                     request.message,
                     answer,
@@ -405,6 +521,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     project_context=project_context,
                     candidate_goals=project_candidates["candidateGoals"],
                     candidate_plans=candidate_plans,
+                    model_review_enabled=review_enabled,
                 )
                 logger.info(
                     "chat_stream timing review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs skipped=%s approved=%s",
@@ -423,11 +540,14 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                     "streaming": True,
                 })
 
+                if incremental is not None and not review.get("approved", True):
+                    raise IncrementalReviewBlocked("回答内容检查未通过，已保留已显示部分，请重试。")
+
                 if (
                     not used_v3_preview
                     and not used_memory_overview
                     and not review.get("approved", True)
-                    and settings.reviewer_max_retry >= 1
+                    and review_max_retry >= 1
                 ):
                     rewritten_answer = []
                     rewrite_prompt = (
@@ -436,6 +556,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         f"{review.get('rewrite_instruction') or review.get('reason') or ''}"
                     )
                     rewrite_started = perf_counter()
+                    emit_step("writer_agent", "running", summary="正在根据内容检查结果调整回答")
                     for chunk in stream_answer(rewrite_prompt, contexts, combined_context):
                         rewritten_answer.append(chunk)
                     answer = "".join(rewritten_answer)
@@ -450,6 +571,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         "bufferedUntilReview": True,
                         "writerInput": writer_input,
                     })
+                    emit_step("writer_agent", "completed", duration_ms=int((perf_counter() - rewrite_started) * 1000),
+                              summary="回答调整完成")
                     review = run_reviewer_agent(
                         request.message,
                         answer,
@@ -461,6 +584,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                         project_context=project_context,
                         candidate_goals=project_candidates["candidateGoals"],
                         candidate_plans=candidate_plans,
+                        model_review_enabled=review_enabled,
                     )
                     logger.info(
                         "chat_stream timing rewrite_review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs approved=%s",
@@ -489,14 +613,34 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
                 # A reviewer rewrite must not reintroduce a false persistence claim.
                 answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
-                logger.info(
-                    "chat_stream timing first_delta. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs source=review_gated",
-                    request.user_id,
-                    request.conversation_id,
-                    perf_counter() - stream_started,
-                    perf_counter() - request_started,
-                )
-                yield _sse("delta", {"text": answer})
+                emit_step("reviewer_agent", "completed" if review.get("approved", True) else "failed",
+                          duration_ms=int((perf_counter() - review_started) * 1000),
+                          summary="内容检查完成" if review.get("approved", True) else "内容检查未通过")
+                if incremental is not None:
+                    delta = incremental.push(final=True)
+                    if incremental.published != answer:
+                        raise IncrementalReviewBlocked("回答内容需要重新检查，请重试。")
+                else:
+                    delta = answer
+                if delta:
+                    if first_visible_ms is None:
+                        first_visible_ms = int((perf_counter() - request_started) * 1000)
+                        logger.info("chat_stream timing first_delta. total_ms=%s source=%s", first_visible_ms, policy)
+                    yield _sse("delta", {"text": delta})
+
+                final_timings = sanitize_timings({**writer_timings, "prepare_context_ms": prepare_duration_ms,
+                    "first_delta_ms": first_visible_ms, "review_ms": int((perf_counter() - review_started) * 1000),
+                    "total_ms": int((perf_counter() - request_started) * 1000)})
+                for trace in reversed(agent_trace):
+                    if trace.get("agent") == "writer_agent":
+                        trace["timings"] = final_timings
+                        break
+                for trace in reversed(agent_trace):
+                    if trace.get("agent") == "reviewer_agent":
+                        trace["elapsedMs"] = final_timings["review_ms"]
+                        break
+                emit_step("writer_agent", "completed", duration_ms=writer_duration_ms,
+                          summary="回答输出完成", timings=final_timings)
 
                 # 记忆写入延迟到响应结束后执行（见 StreamingResponse 的 background 参数）。
                 final_answer_holder["answer"] = answer
@@ -558,30 +702,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 request.conversation_id,
             )
             raise
-        except Exception as exc:
-            logger.exception("Streaming chat failed. user_id=%s conversation_id=%s", request.user_id, request.conversation_id)
-            yield _sse("error", {"message": _friendly_stream_error(exc)})
+        except Exception:
+            raise
 
-    def write_memory_after_stream() -> None:
-        answer = final_answer_holder.get("answer")
-        if not answer:
-            return
-        write_memory_in_background(
-            request.user_id,
-            request.conversation_id,
-            request.message,
-            answer,
-            request.ai_config,
-            True,
-            usage_context,
-            request.source_message_id,
-        )
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream; charset=utf-8",
-        background=BackgroundTask(write_memory_after_stream),
-    )
+    yield from generate()
 
 
 def _stream_image_tool(message: str) -> str | None:
@@ -974,6 +1098,8 @@ def _answer_claims_memory_saved(answer: str) -> bool:
 
 
 def _friendly_stream_error(exc: Exception) -> str:
+    if isinstance(exc, IncrementalReviewBlocked):
+        return str(exc)
     text = str(exc)
     lowered = text.lower()
     if "timeout" in lowered or "timed out" in lowered:

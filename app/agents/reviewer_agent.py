@@ -1,7 +1,7 @@
 import re
 
 from app.chains.reviewer_chain import invoke_reviewer_chain
-from app.core.config import settings
+from app.core.runtime_config import current_review_config
 from app.memory.overview import is_memory_overview_question
 
 
@@ -16,6 +16,8 @@ def run_reviewer_agent(
     project_context: dict[str, object] | None = None,
     candidate_goals: list[dict[str, object]] | None = None,
     candidate_plans: list[dict[str, object]] | None = None,
+    *,
+    model_review_enabled: bool | None = None,
 ) -> dict[str, object]:
     rule_review = _rule_memory_governance_review(answer, memory or {}, tool_results or [])
     if not rule_review["approved"]:
@@ -41,7 +43,7 @@ def run_reviewer_agent(
     )
     if not v3_review["approved"]:
         return {**v3_review, **memory_review_metadata}
-    if not settings.reviewer_enabled:
+    if not (current_review_config()[0] if model_review_enabled is None else model_review_enabled):
         return {
             "approved": True,
             "score": 1.0,

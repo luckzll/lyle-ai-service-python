@@ -1,0 +1,1424 @@
+{
+  "schema_version": "rag-evaluation-v1",
+  "description": "人工编写的虚构星桥语料；与实际产品、价格、客户数据无关。2026-09-12冻结，禁止依据新算法结果调gold。",
+  "top_k": 5,
+  "documents": [
+    {
+      "doc_id": "overview",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥产品说明",
+      "text": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。\n\n星桥的离线部署包代号是 Orion。离线部署不包含外部网页搜索，需要管理员另行启用联网连接器。\n\n项目问答只读取当前成员已经获准访问的资料。管理员身份并不会自动获得其他租户的文件。\n\n定时摘要每天上午九点执行，采用项目设置中的时区。没有配置时区时使用亚洲上海时区。"
+    },
+    {
+      "doc_id": "quota",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥容量与额度",
+      "text": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。\n\n星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。\n\n星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。"
+    },
+    {
+      "doc_id": "runtime",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥执行与恢复",
+      "text": "每次回答都由独立的 turnId 标识。浏览器关闭不会取消后台任务，再次进入会话时按 turnId 查询执行状态。\n\n收到停止确认后任务进入 CANCELLED 状态。若停止请求本身失败，界面显示待确认，不宣称后台已经停止。\n\n服务之间每 12 秒发送一次心跳。心跳只代表连接存活，不代表模型已经输出正文。\n\n知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。"
+    },
+    {
+      "doc_id": "search",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥知识库检索",
+      "text": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。\n\n资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。\n\n引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。\n\n知识库删除文件后应同时失效关键词索引和检索缓存。缓存键包含知识库版本及访问范围。"
+    },
+    {
+      "doc_id": "security",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥权限规则",
+      "text": "工作区授权遵循最小权限原则。只读连接器可以查询资料，不能创建、修改或删除外部系统记录。\n\n邮件发送属于外部写操作，需要单独确认收件人和正文。查询邮件不等于批准发送邮件。\n\n访问知识库资料前必须验证租户和知识库授权。检索不可返回未选择知识库的文件片段。"
+    },
+    {
+      "doc_id": "release",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥发布手册",
+      "text": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。\n\n星桥 2.4.1 在 2026 年 8 月 27 日发布，只修复连接断开后的恢复状态，没有调整套餐额度。\n\n更新索引格式前先导出旧索引清单，再建立新索引并校验记录数量。校验失败时继续使用旧索引。\n\n应用升级回滚需要切回上一版本镜像，并恢复与该版本匹配的配置。数据库结构不兼容时应使用事先准备的迁移回退方案。"
+    },
+    {
+      "doc_id": "backup",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥备份与恢复",
+      "text": "资料库每天凌晨两点创建完整备份，增量备份间隔为 30 分钟。备份文件保留 21 天。\n\n恢复演练每季度至少执行一次，验收包括文档数量、权限范围和引用位置。\n\n删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。"
+    },
+    {
+      "doc_id": "service",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥问题排查",
+      "text": "遇到 429 状态应先检查并发和限流配额，再使用退避重试。不得通过重复创建任务规避限流。\n\n日志中的 request_ms 表示整次请求耗时，first_token_ms 表示模型开始输出正文之前的等待时间，两者不能直接相加。\n\n关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。\n\n无匹配资料时应说明当前知识库没有支持信息，不能凭空补充文档中的数字。"
+    },
+    {
+      "doc_id": "cache",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥缓存规则",
+      "text": "检索缓存有效期是 180 秒。文档新增、替换或删除时会立即使相关缓存失效。\n\n缓存只保存查询结果，不保存访问凭据。\n\n缓存只保存查询结果，不保存访问凭据。"
+    },
+    {
+      "doc_id": "guide-west",
+      "knowledge_base_id": "kb-west",
+      "title": "西区运营资料",
+      "text": "西区项目代号为流沙，联系人是沈宁。项目预算为 73 万元，目标发布日期为 2026 年 11 月 8 日。\n\n西区流沙项目每周二下午三点同步进展。会议记录保存到西区资料库。\n\n西区试点设备的校验码是 W-7319，仅用于测试数据隔离。"
+    },
+    {
+      "doc_id": "guide-east",
+      "knowledge_base_id": "kb-east",
+      "title": "东区运营资料",
+      "text": "东区项目代号为流沙，联系人是周青。项目预算为 46 万元，目标发布日期为 2026 年 12 月 6 日。\n\n东区流沙项目每周四下午四点同步进展。会议记录保存到东区资料库。\n\n东区试点设备的校验码是 E-4608，仅用于测试数据隔离。"
+    },
+    {
+      "doc_id": "stale",
+      "knowledge_base_id": "kb-archive",
+      "title": "星桥旧版归档",
+      "text": "星桥 1.8 旧版资料每份文件上限为 8 MB，重排候选上限为 6 个。本页仅用于历史归档。\n\n星桥旧版归档会议每周一上午十点开始。本页不代表当前产品行为。"
+    }
+  ],
+  "chunks": [
+    {
+      "key": "kb-guide/overview#1",
+      "doc_id": "overview",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥产品说明 #1",
+      "chunk": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。",
+      "chunk_index": 1,
+      "parent_title": "星桥产品说明",
+      "start_char": 0,
+      "end_char": 35
+    },
+    {
+      "key": "kb-guide/overview#2",
+      "doc_id": "overview",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥产品说明 #2",
+      "chunk": "星桥的离线部署包代号是 Orion。离线部署不包含外部网页搜索，需要管理员另行启用联网连接器。",
+      "chunk_index": 2,
+      "parent_title": "星桥产品说明",
+      "start_char": 37,
+      "end_char": 84
+    },
+    {
+      "key": "kb-guide/overview#3",
+      "doc_id": "overview",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥产品说明 #3",
+      "chunk": "项目问答只读取当前成员已经获准访问的资料。管理员身份并不会自动获得其他租户的文件。",
+      "chunk_index": 3,
+      "parent_title": "星桥产品说明",
+      "start_char": 86,
+      "end_char": 127
+    },
+    {
+      "key": "kb-guide/overview#4",
+      "doc_id": "overview",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥产品说明 #4",
+      "chunk": "定时摘要每天上午九点执行，采用项目设置中的时区。没有配置时区时使用亚洲上海时区。",
+      "chunk_index": 4,
+      "parent_title": "星桥产品说明",
+      "start_char": 129,
+      "end_char": 169
+    },
+    {
+      "key": "kb-guide/quota#1",
+      "doc_id": "quota",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥容量与额度 #1",
+      "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+      "chunk_index": 1,
+      "parent_title": "星桥容量与额度",
+      "start_char": 0,
+      "end_char": 50
+    },
+    {
+      "key": "kb-guide/quota#2",
+      "doc_id": "quota",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥容量与额度 #2",
+      "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+      "chunk_index": 2,
+      "parent_title": "星桥容量与额度",
+      "start_char": 52,
+      "end_char": 103
+    },
+    {
+      "key": "kb-guide/quota#3",
+      "doc_id": "quota",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥容量与额度 #3",
+      "chunk": "星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。",
+      "chunk_index": 3,
+      "parent_title": "星桥容量与额度",
+      "start_char": 105,
+      "end_char": 150
+    },
+    {
+      "key": "kb-guide/runtime#1",
+      "doc_id": "runtime",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥执行与恢复 #1",
+      "chunk": "每次回答都由独立的 turnId 标识。浏览器关闭不会取消后台任务，再次进入会话时按 turnId 查询执行状态。",
+      "chunk_index": 1,
+      "parent_title": "星桥执行与恢复",
+      "start_char": 0,
+      "end_char": 57
+    },
+    {
+      "key": "kb-guide/runtime#2",
+      "doc_id": "runtime",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥执行与恢复 #2",
+      "chunk": "收到停止确认后任务进入 CANCELLED 状态。若停止请求本身失败，界面显示待确认，不宣称后台已经停止。",
+      "chunk_index": 2,
+      "parent_title": "星桥执行与恢复",
+      "start_char": 59,
+      "end_char": 112
+    },
+    {
+      "key": "kb-guide/runtime#3",
+      "doc_id": "runtime",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥执行与恢复 #3",
+      "chunk": "服务之间每 12 秒发送一次心跳。心跳只代表连接存活，不代表模型已经输出正文。",
+      "chunk_index": 3,
+      "parent_title": "星桥执行与恢复",
+      "start_char": 114,
+      "end_char": 153
+    },
+    {
+      "key": "kb-guide/runtime#4",
+      "doc_id": "runtime",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥执行与恢复 #4",
+      "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+      "chunk_index": 4,
+      "parent_title": "星桥执行与恢复",
+      "start_char": 155,
+      "end_char": 193
+    },
+    {
+      "key": "kb-guide/search#1",
+      "doc_id": "search",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥知识库检索 #1",
+      "chunk": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。",
+      "chunk_index": 1,
+      "parent_title": "星桥知识库检索",
+      "start_char": 0,
+      "end_char": 50
+    },
+    {
+      "key": "kb-guide/search#2",
+      "doc_id": "search",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥知识库检索 #2",
+      "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+      "chunk_index": 2,
+      "parent_title": "星桥知识库检索",
+      "start_char": 52,
+      "end_char": 89
+    },
+    {
+      "key": "kb-guide/search#3",
+      "doc_id": "search",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥知识库检索 #3",
+      "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+      "chunk_index": 3,
+      "parent_title": "星桥知识库检索",
+      "start_char": 91,
+      "end_char": 141
+    },
+    {
+      "key": "kb-guide/search#4",
+      "doc_id": "search",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥知识库检索 #4",
+      "chunk": "知识库删除文件后应同时失效关键词索引和检索缓存。缓存键包含知识库版本及访问范围。",
+      "chunk_index": 4,
+      "parent_title": "星桥知识库检索",
+      "start_char": 143,
+      "end_char": 183
+    },
+    {
+      "key": "kb-guide/security#1",
+      "doc_id": "security",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥权限规则 #1",
+      "chunk": "工作区授权遵循最小权限原则。只读连接器可以查询资料，不能创建、修改或删除外部系统记录。",
+      "chunk_index": 1,
+      "parent_title": "星桥权限规则",
+      "start_char": 0,
+      "end_char": 43
+    },
+    {
+      "key": "kb-guide/security#2",
+      "doc_id": "security",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥权限规则 #2",
+      "chunk": "邮件发送属于外部写操作，需要单独确认收件人和正文。查询邮件不等于批准发送邮件。",
+      "chunk_index": 2,
+      "parent_title": "星桥权限规则",
+      "start_char": 45,
+      "end_char": 84
+    },
+    {
+      "key": "kb-guide/security#3",
+      "doc_id": "security",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥权限规则 #3",
+      "chunk": "访问知识库资料前必须验证租户和知识库授权。检索不可返回未选择知识库的文件片段。",
+      "chunk_index": 3,
+      "parent_title": "星桥权限规则",
+      "start_char": 86,
+      "end_char": 125
+    },
+    {
+      "key": "kb-guide/release#1",
+      "doc_id": "release",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥发布手册 #1",
+      "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+      "chunk_index": 1,
+      "parent_title": "星桥发布手册",
+      "start_char": 0,
+      "end_char": 65
+    },
+    {
+      "key": "kb-guide/release#2",
+      "doc_id": "release",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥发布手册 #2",
+      "chunk": "星桥 2.4.1 在 2026 年 8 月 27 日发布，只修复连接断开后的恢复状态，没有调整套餐额度。",
+      "chunk_index": 2,
+      "parent_title": "星桥发布手册",
+      "start_char": 67,
+      "end_char": 119
+    },
+    {
+      "key": "kb-guide/release#3",
+      "doc_id": "release",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥发布手册 #3",
+      "chunk": "更新索引格式前先导出旧索引清单，再建立新索引并校验记录数量。校验失败时继续使用旧索引。",
+      "chunk_index": 3,
+      "parent_title": "星桥发布手册",
+      "start_char": 121,
+      "end_char": 164
+    },
+    {
+      "key": "kb-guide/release#4",
+      "doc_id": "release",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥发布手册 #4",
+      "chunk": "应用升级回滚需要切回上一版本镜像，并恢复与该版本匹配的配置。数据库结构不兼容时应使用事先准备的迁移回退方案。",
+      "chunk_index": 4,
+      "parent_title": "星桥发布手册",
+      "start_char": 166,
+      "end_char": 220
+    },
+    {
+      "key": "kb-guide/backup#1",
+      "doc_id": "backup",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥备份与恢复 #1",
+      "chunk": "资料库每天凌晨两点创建完整备份，增量备份间隔为 30 分钟。备份文件保留 21 天。",
+      "chunk_index": 1,
+      "parent_title": "星桥备份与恢复",
+      "start_char": 0,
+      "end_char": 42
+    },
+    {
+      "key": "kb-guide/backup#2",
+      "doc_id": "backup",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥备份与恢复 #2",
+      "chunk": "恢复演练每季度至少执行一次，验收包括文档数量、权限范围和引用位置。",
+      "chunk_index": 2,
+      "parent_title": "星桥备份与恢复",
+      "start_char": 44,
+      "end_char": 77
+    },
+    {
+      "key": "kb-guide/backup#3",
+      "doc_id": "backup",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥备份与恢复 #3",
+      "chunk": "删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。",
+      "chunk_index": 3,
+      "parent_title": "星桥备份与恢复",
+      "start_char": 79,
+      "end_char": 127
+    },
+    {
+      "key": "kb-guide/service#1",
+      "doc_id": "service",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥问题排查 #1",
+      "chunk": "遇到 429 状态应先检查并发和限流配额，再使用退避重试。不得通过重复创建任务规避限流。",
+      "chunk_index": 1,
+      "parent_title": "星桥问题排查",
+      "start_char": 0,
+      "end_char": 44
+    },
+    {
+      "key": "kb-guide/service#2",
+      "doc_id": "service",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥问题排查 #2",
+      "chunk": "日志中的 request_ms 表示整次请求耗时，first_token_ms 表示模型开始输出正文之前的等待时间，两者不能直接相加。",
+      "chunk_index": 2,
+      "parent_title": "星桥问题排查",
+      "start_char": 46,
+      "end_char": 113
+    },
+    {
+      "key": "kb-guide/service#3",
+      "doc_id": "service",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥问题排查 #3",
+      "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+      "chunk_index": 3,
+      "parent_title": "星桥问题排查",
+      "start_char": 115,
+      "end_char": 161
+    },
+    {
+      "key": "kb-guide/service#4",
+      "doc_id": "service",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥问题排查 #4",
+      "chunk": "无匹配资料时应说明当前知识库没有支持信息，不能凭空补充文档中的数字。",
+      "chunk_index": 4,
+      "parent_title": "星桥问题排查",
+      "start_char": 163,
+      "end_char": 197
+    },
+    {
+      "key": "kb-guide/cache#1",
+      "doc_id": "cache",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥缓存规则 #1",
+      "chunk": "检索缓存有效期是 180 秒。文档新增、替换或删除时会立即使相关缓存失效。",
+      "chunk_index": 1,
+      "parent_title": "星桥缓存规则",
+      "start_char": 0,
+      "end_char": 37
+    },
+    {
+      "key": "kb-guide/cache#2",
+      "doc_id": "cache",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥缓存规则 #2",
+      "chunk": "缓存只保存查询结果，不保存访问凭据。",
+      "chunk_index": 2,
+      "parent_title": "星桥缓存规则",
+      "start_char": 39,
+      "end_char": 57
+    },
+    {
+      "key": "kb-guide/cache#3",
+      "doc_id": "cache",
+      "knowledge_base_id": "kb-guide",
+      "title": "星桥缓存规则 #3",
+      "chunk": "缓存只保存查询结果，不保存访问凭据。",
+      "chunk_index": 3,
+      "parent_title": "星桥缓存规则",
+      "start_char": 59,
+      "end_char": 77
+    },
+    {
+      "key": "kb-west/guide-west#1",
+      "doc_id": "guide-west",
+      "knowledge_base_id": "kb-west",
+      "title": "西区运营资料 #1",
+      "chunk": "西区项目代号为流沙，联系人是沈宁。项目预算为 73 万元，目标发布日期为 2026 年 11 月 8 日。",
+      "chunk_index": 1,
+      "parent_title": "西区运营资料",
+      "start_char": 0,
+      "end_char": 53
+    },
+    {
+      "key": "kb-west/guide-west#2",
+      "doc_id": "guide-west",
+      "knowledge_base_id": "kb-west",
+      "title": "西区运营资料 #2",
+      "chunk": "西区流沙项目每周二下午三点同步进展。会议记录保存到西区资料库。",
+      "chunk_index": 2,
+      "parent_title": "西区运营资料",
+      "start_char": 55,
+      "end_char": 86
+    },
+    {
+      "key": "kb-west/guide-west#3",
+      "doc_id": "guide-west",
+      "knowledge_base_id": "kb-west",
+      "title": "西区运营资料 #3",
+      "chunk": "西区试点设备的校验码是 W-7319，仅用于测试数据隔离。",
+      "chunk_index": 3,
+      "parent_title": "西区运营资料",
+      "start_char": 88,
+      "end_char": 117
+    },
+    {
+      "key": "kb-east/guide-east#1",
+      "doc_id": "guide-east",
+      "knowledge_base_id": "kb-east",
+      "title": "东区运营资料 #1",
+      "chunk": "东区项目代号为流沙，联系人是周青。项目预算为 46 万元，目标发布日期为 2026 年 12 月 6 日。",
+      "chunk_index": 1,
+      "parent_title": "东区运营资料",
+      "start_char": 0,
+      "end_char": 53
+    },
+    {
+      "key": "kb-east/guide-east#2",
+      "doc_id": "guide-east",
+      "knowledge_base_id": "kb-east",
+      "title": "东区运营资料 #2",
+      "chunk": "东区流沙项目每周四下午四点同步进展。会议记录保存到东区资料库。",
+      "chunk_index": 2,
+      "parent_title": "东区运营资料",
+      "start_char": 55,
+      "end_char": 86
+    },
+    {
+      "key": "kb-east/guide-east#3",
+      "doc_id": "guide-east",
+      "knowledge_base_id": "kb-east",
+      "title": "东区运营资料 #3",
+      "chunk": "东区试点设备的校验码是 E-4608，仅用于测试数据隔离。",
+      "chunk_index": 3,
+      "parent_title": "东区运营资料",
+      "start_char": 88,
+      "end_char": 117
+    },
+    {
+      "key": "kb-archive/stale#1",
+      "doc_id": "stale",
+      "knowledge_base_id": "kb-archive",
+      "title": "星桥旧版归档 #1",
+      "chunk": "星桥 1.8 旧版资料每份文件上限为 8 MB，重排候选上限为 6 个。本页仅用于历史归档。",
+      "chunk_index": 1,
+      "parent_title": "星桥旧版归档",
+      "start_char": 0,
+      "end_char": 46
+    },
+    {
+      "key": "kb-archive/stale#2",
+      "doc_id": "stale",
+      "knowledge_base_id": "kb-archive",
+      "title": "星桥旧版归档 #2",
+      "chunk": "星桥旧版归档会议每周一上午十点开始。本页不代表当前产品行为。",
+      "chunk_index": 2,
+      "parent_title": "星桥旧版归档",
+      "start_char": 48,
+      "end_char": 78
+    }
+  ],
+  "cases": [
+    {
+      "id": "R001",
+      "category": "direct",
+      "question": "星桥主要有什么能力？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/overview#1"
+          ],
+          "quote": "资料检索、项目问答和定时摘要"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R002",
+      "category": "direct",
+      "question": "星桥离线部署包的代号是什么？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/overview#2"
+          ],
+          "quote": "离线部署包代号是 Orion"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R003",
+      "category": "direct",
+      "question": "星桥定时摘要每天几点执行？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/overview#4"
+          ],
+          "quote": "每天上午九点执行"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R004",
+      "category": "direct",
+      "question": "浏览器关闭会取消后台回答吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#1"
+          ],
+          "quote": "浏览器关闭不会取消后台任务"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R005",
+      "category": "direct",
+      "question": "服务心跳代表模型已经输出了吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#3"
+          ],
+          "quote": "不代表模型已经输出正文"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R006",
+      "category": "direct",
+      "question": "查询过程包含哪些步骤？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/search#1"
+          ],
+          "quote": "查询改写、向量召回、关键词召回、候选合并与结果重排"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R007",
+      "category": "direct",
+      "question": "只读连接器能删除外部记录吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/security#1"
+          ],
+          "quote": "不能创建、修改或删除外部系统记录"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R008",
+      "category": "direct",
+      "question": "删除文件后要失效哪些内容？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/search#4"
+          ],
+          "quote": "同时失效关键词索引和检索缓存"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R009",
+      "category": "direct",
+      "question": "恢复演练需要验收哪些内容？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#2"
+          ],
+          "quote": "文档数量、权限范围和引用位置"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R010",
+      "category": "direct",
+      "question": "遇到 429 应怎么处理？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/service#1"
+          ],
+          "quote": "检查并发和限流配额，再使用退避重试"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R011",
+      "category": "synonym",
+      "question": "关掉网页后还能回来接着看回答吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#1"
+          ],
+          "quote": "再次进入会话时按 turnId 查询执行状态"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R012",
+      "category": "synonym",
+      "question": "没有联网时能搜互联网页面吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/overview#2"
+          ],
+          "quote": "离线部署不包含外部网页搜索"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R013",
+      "category": "synonym",
+      "question": "为啥相关程度很高还是没答全？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/search#2"
+          ],
+          "quote": "相关性分数高并不等于所有问题要点都已经被覆盖"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R014",
+      "category": "synonym",
+      "question": "检索时整库一遍遍扫太费时怎么办？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/service#3"
+          ],
+          "quote": "倒排索引保存词项到片段的映射，可以减少重复扫描"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R015",
+      "category": "synonym",
+      "question": "找不到依据时可以猜资料里的金额吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/service#4"
+          ],
+          "quote": "不能凭空补充文档中的数字"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R016",
+      "category": "synonym",
+      "question": "查询完邮件就能直接寄出去吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/security#2"
+          ],
+          "quote": "查询邮件不等于批准发送邮件"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R017",
+      "category": "synonym",
+      "question": "点击停止没有成功，能显示已取消吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#2"
+          ],
+          "quote": "界面显示待确认，不宣称后台已经停止"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R018",
+      "category": "context_missing",
+      "question": "它能联网查网页吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/overview#2"
+          ],
+          "quote": "离线部署不包含外部网页搜索"
+        }
+      ],
+      "answerable": true,
+      "conversation_history": [
+        {
+          "role": "user",
+          "content": "我想用星桥离线部署包。"
+        }
+      ]
+    },
+    {
+      "id": "R019",
+      "category": "context_missing",
+      "question": "那它每份文件限制多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#2"
+          ],
+          "quote": "每份文件上限为 96 MB"
+        }
+      ],
+      "answerable": true,
+      "conversation_history": [
+        {
+          "role": "user",
+          "content": "先介绍星桥团队版。"
+        }
+      ]
+    },
+    {
+      "id": "R020",
+      "category": "context_missing",
+      "question": "这个能恢复多久？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#3"
+          ],
+          "quote": "有 14 天回收期"
+        }
+      ],
+      "answerable": true,
+      "conversation_history": [
+        {
+          "role": "user",
+          "content": "我刚删除一个知识库。"
+        }
+      ]
+    },
+    {
+      "id": "R021",
+      "category": "context_missing",
+      "question": "具体改了什么？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#2"
+          ],
+          "quote": "只修复连接断开后的恢复状态"
+        }
+      ],
+      "answerable": true,
+      "conversation_history": [
+        {
+          "role": "user",
+          "content": "我看到了星桥 2.4.1。"
+        }
+      ]
+    },
+    {
+      "id": "R022",
+      "category": "context_missing",
+      "question": "他是哪个项目的联系人？",
+      "knowledge_base_ids": [
+        "kb-west"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-west/guide-west#1"
+          ],
+          "quote": "西区项目代号为流沙，联系人是沈宁"
+        }
+      ],
+      "answerable": true,
+      "conversation_history": [
+        {
+          "role": "user",
+          "content": "沈宁在负责项目。"
+        }
+      ]
+    },
+    {
+      "id": "R023",
+      "category": "exact",
+      "question": "星桥轻量版每月有多少点额度？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#1"
+          ],
+          "quote": "1200 点额度"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R024",
+      "category": "exact",
+      "question": "星桥团队版单文件上限和每库文件数分别是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#2"
+          ],
+          "quote": "96 MB"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#2"
+          ],
+          "quote": "320 份文件"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R025",
+      "category": "exact",
+      "question": "星桥 2.4.0 是什么时候发布的？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#1"
+          ],
+          "quote": "2026 年 8 月 18 日"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R026",
+      "category": "exact",
+      "question": "星桥 2.3.0 和 2.4.0 分别允许多少重排候选？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#1"
+          ],
+          "quote": "2.3.0 最多支持 12 个候选"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#1"
+          ],
+          "quote": "支持 18 个重排候选"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R027",
+      "category": "exact",
+      "question": "完整备份几点运行、备份保留几天？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#1"
+          ],
+          "quote": "凌晨两点"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#1"
+          ],
+          "quote": "保留 21 天"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R028",
+      "category": "exact",
+      "question": "增量备份的时间间隔是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#1"
+          ],
+          "quote": "30 分钟"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R029",
+      "category": "exact",
+      "question": "检索缓存有效期是多少秒？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/cache#1"
+          ],
+          "quote": "180 秒"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R030",
+      "category": "exact",
+      "question": "当前心跳发送间隔是多少秒？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#3"
+          ],
+          "quote": "每 12 秒"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R031",
+      "category": "exact",
+      "question": "request_ms 和 first_token_ms 可以直接相加吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/service#2"
+          ],
+          "quote": "两者不能直接相加"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R032",
+      "category": "multi_evidence",
+      "question": "星桥轻量版和团队版每月额度分别是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#1"
+          ],
+          "quote": "1200 点额度"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#2"
+          ],
+          "quote": "5400 点额度"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R033",
+      "category": "multi_evidence",
+      "question": "升级前怎样保护索引，应用出问题怎么回滚？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#3"
+          ],
+          "quote": "先导出旧索引清单"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/release#4"
+          ],
+          "quote": "切回上一版本镜像"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R034",
+      "category": "multi_evidence",
+      "question": "浏览器关闭后如何恢复，停止请求失败又该显示什么？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#1"
+          ],
+          "quote": "按 turnId 查询执行状态"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/runtime#2"
+          ],
+          "quote": "界面显示待确认"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R035",
+      "category": "multi_evidence",
+      "question": "文档变更对缓存有什么影响，引用位置包含什么？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/cache#1"
+          ],
+          "quote": "立即使相关缓存失效"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/search#3"
+          ],
+          "quote": "文档标识、片段序号、起始字符与结束字符"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R036",
+      "category": "multi_evidence",
+      "question": "备份保留天数和删除后的回收天数一样吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#1"
+          ],
+          "quote": "保留 21 天"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/backup#3"
+          ],
+          "quote": "14 天回收期"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R037",
+      "category": "multi_evidence",
+      "question": "团队版有多少额度，模型失败时扣吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#2"
+          ],
+          "quote": "5400 点额度"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#3"
+          ],
+          "quote": "模型响应失败不扣额度"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R038",
+      "category": "unanswerable",
+      "question": "星桥企业版每年订阅价格是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R039",
+      "category": "unanswerable",
+      "question": "星桥明年的招聘人数是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R040",
+      "category": "unanswerable",
+      "question": "星桥支持哪些未公布的支付银行？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R041",
+      "category": "unanswerable",
+      "question": "Orion 部署包下载密码是什么？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R042",
+      "category": "unanswerable",
+      "question": "星桥在火星上的数据中心地址在哪里？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R043",
+      "category": "isolation",
+      "question": "流沙项目预算是多少？",
+      "knowledge_base_ids": [
+        "kb-west"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-west/guide-west#1"
+          ],
+          "quote": "73 万元"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R044",
+      "category": "isolation",
+      "question": "流沙项目预算是多少？",
+      "knowledge_base_ids": [
+        "kb-east"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-east/guide-east#1"
+          ],
+          "quote": "46 万元"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R045",
+      "category": "isolation",
+      "question": "西区试点设备的校验码是什么？",
+      "knowledge_base_ids": [
+        "kb-east"
+      ],
+      "evidence": [],
+      "answerable": false
+    },
+    {
+      "id": "R046",
+      "category": "isolation",
+      "question": "东区和西区流沙的发布日期分别是什么？",
+      "knowledge_base_ids": [
+        "kb-east",
+        "kb-west"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-east/guide-east#1"
+          ],
+          "quote": "2026 年 12 月 6 日"
+        },
+        {
+          "acceptable_chunk_keys": [
+            "kb-west/guide-west#1"
+          ],
+          "quote": "2026 年 11 月 8 日"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R047",
+      "category": "isolation",
+      "question": "星桥当前轻量版单文件上限是多少？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/quota#1"
+          ],
+          "quote": "24 MB"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R048",
+      "category": "duplicates",
+      "question": "缓存会保存访问凭据吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/cache#2",
+            "kb-guide/cache#3"
+          ],
+          "quote": "缓存只保存查询结果，不保存访问凭据。"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R049",
+      "category": "duplicates",
+      "question": "相同文字位于不同片段时，引用位置可以混用吗？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/search#3"
+          ],
+          "quote": "必须保留各自的来源位置"
+        }
+      ],
+      "answerable": true
+    },
+    {
+      "id": "R050",
+      "category": "duplicates",
+      "question": "缓存只保存哪些内容？",
+      "knowledge_base_ids": [
+        "kb-guide"
+      ],
+      "evidence": [
+        {
+          "acceptable_chunk_keys": [
+            "kb-guide/cache#2",
+            "kb-guide/cache#3"
+          ],
+          "quote": "缓存只保存查询结果"
+        }
+      ],
+      "answerable": true
+    }
+  ]
+}

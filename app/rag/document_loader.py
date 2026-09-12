@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -100,13 +101,18 @@ def split_text_with_metadata(text: str, chunk_size: int = 800, overlap: int = 12
         block_text = str(block["text"])
         block_title = str(block["heading"] or "")
         block_start = int(block["start"])
+        if current and block_title != current_title:
+            # A chunk must not inherit the previous section's context label.
+            chunks.append(_chunk(current, len(chunks) + 1, current_title, current_start))
+            current = ""
         if len(block_text) > chunk_size:
             if current:
                 chunks.append(_chunk(current, len(chunks) + 1, current_title, current_start))
                 current = ""
             chunks.extend(_window_split(block_text, chunk_size, overlap, len(chunks), block_title, block_start))
             continue
-        candidate = f"{current}\n{block_text}".strip() if current else block_text
+        # Retain exact source whitespace so offsets identify the citable text.
+        candidate = text[current_start:int(block["end"])] if current else block_text
         if len(candidate) <= chunk_size:
             if not current:
                 current_start = block_start
@@ -127,8 +133,9 @@ def split_text_with_metadata(text: str, chunk_size: int = 800, overlap: int = 12
 
 def _semantic_blocks(text: str) -> list[dict[str, object]]:
     paragraphs: list[dict[str, object]] = []
-    current: list[str] = []
+    current = False
     current_start = 0
+    current_end = 0
     current_heading = ""
     active_heading = ""
     cursor = 0
@@ -136,15 +143,16 @@ def _semantic_blocks(text: str) -> list[dict[str, object]]:
         line = raw_line.strip()
         if not line:
             if current:
-                paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
-                current = []
+                paragraphs.append({"text": text[current_start:current_end], "start": current_start, "end": current_end, "heading": current_heading})
+                current = False
                 current_heading = active_heading
             cursor += len(raw_line)
             continue
         if _looks_like_heading(line) and current:
-            paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
-            current = [line]
+            paragraphs.append({"text": text[current_start:current_end], "start": current_start, "end": current_end, "heading": current_heading})
+            current = True
             current_start = cursor
+            current_end = cursor + len(raw_line.rstrip("\r\n"))
             current_heading = line
             active_heading = line
             cursor += len(raw_line)
@@ -155,10 +163,11 @@ def _semantic_blocks(text: str) -> list[dict[str, object]]:
         if _looks_like_heading(line):
             active_heading = line
             current_heading = line
-        current.append(line)
+        current = True
+        current_end = cursor + len(raw_line.rstrip("\r\n"))
         cursor += len(raw_line)
     if current:
-        paragraphs.append({"text": " ".join(current), "start": current_start, "heading": current_heading})
+        paragraphs.append({"text": text[current_start:current_end], "start": current_start, "end": current_end, "heading": current_heading})
     return [item for item in paragraphs if str(item["text"]).strip()]
 
 
@@ -208,7 +217,7 @@ def _resolve_storage_path(ref: StorageObjectRef) -> Path:
     provider = (ref.storage_provider or "").upper()
     if provider == "LOCAL" and ref.storage_path:
         parsed = urlparse(ref.storage_path)
-        return Path(unquote(parsed.path)) if parsed.scheme == "file" else Path(ref.storage_path)
+        return Path(url2pathname(parsed.path)) if parsed.scheme == "file" else Path(ref.storage_path)
     if provider in {"MINIO", "S3"} and ref.bucket and ref.object_key:
         return _download_minio_object(ref.bucket, ref.object_key)
     if provider == "TOS":
@@ -216,7 +225,7 @@ def _resolve_storage_path(ref: StorageObjectRef) -> Path:
 
     parsed = urlparse(ref.storage_path)
     if parsed.scheme == "file":
-        return Path(unquote(parsed.path))
+        return Path(url2pathname(parsed.path))
     if parsed.scheme == "s3":
         return _download_minio_object(parsed.netloc, parsed.path.lstrip("/"))
     return Path(ref.storage_path)

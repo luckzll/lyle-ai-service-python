@@ -234,6 +234,10 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_timeout_seconds: float = 30
+    embedding_cache_enabled: bool = True
+    embedding_cache_ttl_seconds: int = Field(default=300, ge=1, le=3600)
+    embedding_cache_max_entries: int = Field(default=256, ge=1, le=4096)
+    embedding_cache_max_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
     # 开发环境可自动重建维度不匹配的向量集合；生产环境需要谨慎。
     recreate_vector_collections_on_dimension_mismatch: bool = True
 
@@ -243,6 +247,11 @@ class Settings(BaseSettings):
     # 推荐：flag_embedding + BAAI/bge-reranker-base；未安装依赖时会退化到 lexical 关键词重排。
     rerank_provider: str = "lexical"
     rerank_model: str = "BAAI/bge-reranker-base"
+    # ONNX reranker uses the installed FastEmbed dependency; limits are server-owned.
+    rerank_threads: int = Field(default=2, ge=1, le=8)
+    rerank_batch_size: int = Field(default=8, ge=1, le=32)
+    rerank_cache_dir: str = ""
+    rerank_local_files_only: bool = True
     # FlagEmbedding 推理选项。GPU 环境可用 fp16；CPU/Mac 开发环境建议 false。
     rerank_use_fp16: bool = False
     # flag_embedding 不可用时是否自动退回 lexical，开发环境建议 true。
@@ -259,6 +268,28 @@ class Settings(BaseSettings):
     rag_parent_child_sibling_limit: int = 2
     # sufficiency check 会判断知识库资料是否足够回答。
     rag_sufficiency_check_enabled: bool = True
+    # Cached keyword statistics and one final rerank after candidate collection.
+    rag_optimized_retrieval_enabled: bool = True
+    # Bounded per-request concurrency; the executor has a separate process cap.
+    rag_parallel_workers: int = 2
+    rag_retrieval_candidate_limit: int = 20
+    # RRF and adaptive expansion stay opt-in until corpus-specific evaluation.
+    rag_fusion_mode: str = "legacy"
+    rag_adaptive_retrieval_enabled: bool = False
+    rag_global_rerank_limit: int = 40
+    # Optional model calls are opt-in; rule expansion/checks still run by default.
+    rag_auxiliary_model_enabled: bool = False
+    rag_candidate_cache_enabled: bool = True
+    rag_candidate_cache_ttl_seconds: int = 30
+    rag_candidate_cache_max_entries: int = 128
+    rag_candidate_cache_max_bytes: int = 8 * 1024 * 1024
+    rag_contextual_query_enabled: bool = True
+    rag_context_history_turns: int = 6
+    rag_context_history_max_chars: int = 1200
+    # Ingestion policy is server-owned; rebuilding documents applies changes.
+    # Opt-in: the frozen real-vector evaluation found an evidence-recall regression.
+    rag_chunk_context_enabled: bool = False
+    rag_chunk_context_max_chars: int = Field(default=480, ge=0, le=1200)
 
     # ===== Milvus：向量记忆 =====
     # server 模式连接独立 Milvus；lite 模式写入本地文件。

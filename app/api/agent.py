@@ -3,6 +3,8 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.api.chat import _memory_usage_payload, write_memory_in_background
+from app.core.runtime_config import temporary_ai_config
+from app.rag.request_scope import request_retrieval_scope
 from app.graphs.multi_agent_graph import run_multi_agent_graph
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.security.chat_debug import build_safe_chat_debug
@@ -16,12 +18,17 @@ logger = logging.getLogger(__name__)
 def agent_chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
     usage_context = activate_model_call_context(request)
     try:
-        result = run_multi_agent_graph(
-            request.user_id,
-            request.conversation_id,
-            request.message,
-            request.knowledge_base_ids,
-        )
+        with temporary_ai_config(request.ai_config), request_retrieval_scope(
+            request.user_id, request.knowledge_base_ids, request.knowledgeScope, request.conversation_id
+        ):
+            result = run_multi_agent_graph(
+                request.user_id,
+                request.conversation_id,
+                request.message,
+                request.knowledge_base_ids,
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Agent chat failed. user_id=%s conversation_id=%s", request.user_id, request.conversation_id)
         raise HTTPException(status_code=502, detail=f"LangGraph 调用失败：{exc}") from exc

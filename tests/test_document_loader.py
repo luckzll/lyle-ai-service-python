@@ -6,7 +6,29 @@ from openpyxl import Workbook
 from app.core.config import settings
 from app.memory.store import export_memory
 from app.rag.store import add_document
-from app.rag.document_loader import load_document_text, split_text, split_text_with_metadata
+from app.rag.document_loader import StorageObjectRef, load_document_text, resolve_storage_path, split_text, split_text_with_metadata
+
+
+@pytest.mark.parametrize("provider", [None, "LOCAL"])
+def test_file_uri_reads_native_path_with_unicode_spaces_and_literal_percent(tmp_path, provider):
+    # as_uri yields /C:/... on Windows and /tmp/... on POSIX. Percent-encoded
+    # literal sequences must be decoded exactly once, never into a new slash.
+    path = tmp_path / "附件 空格 中文 100% %20 %2F.txt"
+    path.write_text("附件验收内容 V6.2", encoding="utf-8")
+    ref = StorageObjectRef(storage_path=path.as_uri(), storage_provider=provider)
+
+    assert resolve_storage_path(ref) == path
+    assert load_document_text(ref) == (path.name, "附件验收内容 V6.2")
+
+
+@pytest.mark.parametrize("provider", [None, "LOCAL"])
+def test_plain_native_path_is_not_uri_decoded(tmp_path, provider):
+    path = tmp_path / "保留原文件名 %20 %2F.txt"
+    path.write_text("直接路径", encoding="utf-8")
+    ref = StorageObjectRef(storage_path=str(path), storage_provider=provider)
+
+    assert resolve_storage_path(ref) == path
+    assert load_document_text(ref) == (path.name, "直接路径")
 
 
 def test_load_document_text_reads_xlsx(tmp_path):

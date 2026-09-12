@@ -13,6 +13,7 @@ class IngestRequest(BaseModel):
     file_size: int | None = Field(default=None, alias="fileSize")
     visibility: str | None = None
     user_id: str | None = Field(default=None, alias="userId")
+    retrieval_revision: str = Field(default="legacy", alias="retrievalRevision", min_length=1, max_length=64)
 
 
 class IngestResponse(BaseModel):

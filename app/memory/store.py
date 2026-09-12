@@ -14,6 +14,7 @@ import httpx
 import redis
 
 from app.core.config import settings
+from app.core.runtime_config import current_rag_config
 from app.core.database import postgres_connection
 from app.core.qdrant import qdrant_headers
 from app.embedding.client import EMBEDDING_DIMENSION, embed_text
@@ -580,7 +581,7 @@ def _merge_vector_memories(
         key=lambda item: float(item.get("score") or 0),
         reverse=True,
     )
-    return rerank_items(query, ranked, "text", top_k) if settings.rerank_enabled else ranked[:top_k]
+    return rerank_items(query, ranked, "text", top_k) if current_rag_config().rerank_enabled else ranked[:top_k]
 
 
 def _build_vector_memory_text(user_id: str, question: str) -> str:
@@ -679,9 +680,10 @@ def _find_duplicate_vector_memory(user_id: str, text: str) -> dict[str, object] 
 
 
 def _memory_candidate_limit() -> int:
-    if not settings.rerank_enabled:
+    config = current_rag_config()
+    if not config.rerank_enabled:
         return settings.memory_recall_limit
-    return max(settings.memory_recall_limit, settings.rerank_candidate_limit)
+    return max(settings.memory_recall_limit, config.rerank_candidate_limit)
 
 
 def _normalise_score(value: object) -> float:

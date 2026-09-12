@@ -34,6 +34,7 @@ class ChatRequest(BaseModel):
     projectId: int | None = None
     message: str
     knowledgeBaseIds: list[str] = Field(default_factory=list)
+    knowledgeScope: dict[str, object] = Field(default_factory=dict)
     stream: bool = False
     aiConfig: dict[str, str] = Field(default_factory=dict)
     attachments: list[ChatAttachment] = Field(default_factory=list)
