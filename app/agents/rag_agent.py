@@ -1,4 +1,5 @@
 from app.tools.knowledge_tool import retrieve_knowledge_diagnostics_tool
+from app.rag.query_context import current_query_context
 
 
 def run_rag_agent(question: str, knowledge_base_ids: list[str], use_rag: bool) -> dict[str, object]:
@@ -11,11 +12,21 @@ def run_rag_agent(question: str, knowledge_base_ids: list[str], use_rag: bool) -
             "decision": decision,
             "skipped": True,
         }
-    result = retrieve_knowledge_diagnostics_tool(question, knowledge_base_ids)
+    query_context = current_query_context()
+    effective_question = query_context.effective_question if query_context and query_context.original_question == question else question
+    result = retrieve_knowledge_diagnostics_tool(effective_question, knowledge_base_ids)
+    retrieval_plan = dict(result.get("retrievalPlan") or {})
+    if query_context and query_context.original_question == question:
+        retrieval_plan["queryResolution"] = {
+            "method": query_context.resolution_method, "reason": query_context.resolution_reason,
+            "originalQuestion": question, "effectiveQuestion": effective_question,
+        }
     return {
         "contexts": result.get("contexts") or [],
         "queries": result.get("queries") or [question],
         "sufficiency": result.get("sufficiency") or {},
+        "timings": result.get("timings") or {},
+        "retrievalPlan": retrieval_plan,
         "decision": decision,
         "skipped": False,
     }

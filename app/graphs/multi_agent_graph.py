@@ -1,5 +1,6 @@
 import operator
 import logging
+from functools import wraps
 from typing import Annotated, TypedDict
 from time import perf_counter
 
@@ -13,10 +14,45 @@ from app.agents.supervisor_agent import run_supervisor_agent
 from app.agents.tool_agent import run_tool_agent
 from app.agents.writer_agent import run_writer_agent
 from app.core.config import settings
+from app.chat_progress import emit_step, sanitize_timings
 from app.memory.overview import build_memory_overview_answer
+from app.rag.query_context import query_context_scope
 
 
 logger = logging.getLogger(__name__)
+
+
+def _progress_node(agent: str):
+    """Observe real node boundaries, without publishing input/output contents."""
+    def decorate(function):
+        @wraps(function)
+        def observed(state):
+            started = perf_counter()
+            emit_step(agent, "running")
+            try:
+                result = function(state)
+            except Exception:
+                emit_step(agent, "failed", duration_ms=_elapsed_ms(started), summary="步骤执行失败")
+                raise
+            traces = [
+                *(result.get("agent_trace") or []),
+                *(item.get("trace") or {} for item in result.get("agent_outputs") or []),
+            ]
+            trace = next((item for item in reversed(traces) if item.get("agent") == agent), {})
+            skipped = bool(trace.get("skipped"))
+            summary = "本轮未执行此步骤" if skipped else "步骤已完成"
+            if agent == "rag_agent" and not skipped:
+                summary = f"检索 {int(trace.get('queryCount') or 0)} 次，命中 {int(trace.get('contextCount') or 0)} 个片段"
+            elif agent == "tool_agent" and not skipped:
+                summary = f"工具结果 {int(trace.get('toolCount') or 0)} 个"
+            emit_step(
+                agent, "skipped" if skipped else "completed",
+                duration_ms=_elapsed_ms(started), summary=summary,
+                timings=trace.get("timings"),
+            )
+            return result
+        return observed
+    return decorate
 
 
 class MultiAgentState(TypedDict):
@@ -43,6 +79,7 @@ class MultiAgentState(TypedDict):
     agent_outputs: Annotated[list[dict[str, object]], operator.add]
 
 
+@_progress_node("supervisor_agent")
 def supervisor_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     supervisor = run_supervisor_agent(state["question"], state["knowledge_base_ids"])
@@ -71,6 +108,7 @@ def supervisor_node(state: MultiAgentState) -> MultiAgentState:
     }
 
 
+@_progress_node("memory_agent")
 def memory_agent_node(state: MultiAgentState) -> MultiAgentState:
     if not state["supervisor"].get("use_memory", True):
         return {
@@ -111,25 +149,31 @@ def memory_agent_node(state: MultiAgentState) -> MultiAgentState:
     }
 
 
+@_progress_node("rag_agent")
 def rag_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
-    result = run_rag_agent(
-        state["question"],
-        state["knowledge_base_ids"],
-        bool(state["supervisor"].get("use_rag", False)),
-    )
+    with query_context_scope(state["user_id"], state["conversation_id"], state["question"]):
+        result = run_rag_agent(
+            state["question"],
+            state["knowledge_base_ids"],
+            bool(state["supervisor"].get("use_rag", False)),
+        )
     contexts = result.get("contexts") or []
     queries = result.get("queries") or []
     sufficiency = result.get("sufficiency") or {}
     decision = result.get("decision") or {}
+    retrieval_plan = result.get("retrievalPlan") or {}
     logger.info(
-        "context_graph timing rag_done. user_id=%s conversation_id=%s elapsed=%.3fs skipped=%s contexts=%s queries=%s",
+        "context_graph timing rag_done. user_id=%s conversation_id=%s elapsed=%.3fs skipped=%s contexts=%s queries=%s mode=%s candidates=%s rerank_selected=%s",
         state["user_id"],
         state["conversation_id"],
         perf_counter() - started,
         result.get("skipped"),
         len(contexts),
         len(queries),
+        retrieval_plan.get("mode", "skipped"),
+        retrieval_plan.get("candidateCount", 0),
+        retrieval_plan.get("selectedCount", 0),
     )
     return {
         "agent_outputs": [{
@@ -140,6 +184,8 @@ def rag_agent_node(state: MultiAgentState) -> MultiAgentState:
             "trace": {
                 "agent": "rag_agent",
                 "contextCount": len(contexts),
+                "timings": sanitize_timings(result.get("timings")),
+                "retrievalPlan": retrieval_plan,
                 "queryCount": len(queries),
                 "sufficient": sufficiency.get("sufficient"),
                 "skipped": result.get("skipped", False),
@@ -150,6 +196,7 @@ def rag_agent_node(state: MultiAgentState) -> MultiAgentState:
     }
 
 
+@_progress_node("writer_agent")
 def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     from app.memory.fact_store import enabled as facts_enabled
@@ -202,6 +249,7 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     }
 
 
+@_progress_node("tool_agent")
 def tool_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     result = run_tool_agent(
@@ -247,9 +295,15 @@ def route_after_supervisor(state: MultiAgentState) -> list[Send]:
         sends.append(Send("rag_agent", state))
     if supervisor.get("use_tools", False):
         sends.append(Send("tool_agent", state))
-    return sends or [Send("memory_agent", state)]
+    dispatched = sends or [Send("memory_agent", state)]
+    active = {item.node for item in dispatched}
+    for agent in ("memory_agent", "rag_agent", "tool_agent"):
+        if agent not in active:
+            emit_step(agent, "skipped", duration_ms=0, summary="本轮无需执行此步骤")
+    return dispatched
 
 
+@_progress_node("gather_agent")
 def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     outputs = state.get("agent_outputs", [])
@@ -277,6 +331,7 @@ def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
             {
                 "agent": "gather_agent",
                 "receivedAgents": [item.get("agent") for item in outputs],
+                "elapsedMs": _elapsed_ms(started),
             },
         ],
     }
@@ -290,6 +345,7 @@ def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
     return next_state
 
 
+@_progress_node("reviewer_agent")
 def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     review_context = "\n\n".join(
@@ -334,7 +390,8 @@ def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
 def route_after_review(state: MultiAgentState) -> str:
     if state["review"].get("approved", True):
         return END
-    if state["review_attempts"] <= settings.reviewer_max_retry:
+    from app.core.runtime_config import current_review_config
+    if state["review_attempts"] <= current_review_config()[1]:
         return "writer_agent"
     return END
 

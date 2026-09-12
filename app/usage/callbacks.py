@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from math import isfinite
 from threading import Lock
 from time import perf_counter
 from typing import Any
@@ -63,7 +65,7 @@ class UsageCallbackHandler(BaseCallbackHandler):
 
     def on_llm_end(self, response: Any, *, run_id: uuid.UUID, **kwargs: Any) -> None:
         reservation = self._pop_run(run_id)
-        input_tokens, output_tokens = _extract_usage(response)
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = _extract_usage_details(response)
         usage_source = "PROVIDER_REPORTED"
         if input_tokens <= 0 and output_tokens <= 0:
             input_tokens = reservation.estimated_input_tokens
@@ -77,6 +79,8 @@ class UsageCallbackHandler(BaseCallbackHandler):
             usage_source=usage_source,
             status="SUCCEEDED",
             error_category=None,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
     def on_llm_error(self, error: BaseException, *, run_id: uuid.UUID, **kwargs: Any) -> None:
@@ -153,6 +157,8 @@ class UsageCallbackHandler(BaseCallbackHandler):
         usage_source: str,
         status: str,
         error_category: str | None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         context = reservation.context
         if context is None:
@@ -190,8 +196,8 @@ class UsageCallbackHandler(BaseCallbackHandler):
             "routeVersion": context.route_version or settings.ai_usage_route_version,
             "inputTokens": max(0, input_tokens),
             "outputTokens": max(0, output_tokens),
-            "cacheReadTokens": 0,
-            "cacheWriteTokens": 0,
+            "cacheReadTokens": _int(cache_read_tokens),
+            "cacheWriteTokens": _int(cache_write_tokens),
             "usageSource": usage_source,
             "estimatedCostMicros": estimated_cost_micros,
             "pricingVersion": settings.ai_usage_pricing_version,
@@ -223,20 +229,81 @@ class UsageCallbackHandler(BaseCallbackHandler):
 
 
 def _extract_usage(response: Any) -> tuple[int, int]:
-    llm_output = getattr(response, "llm_output", None) or {}
-    usage = llm_output.get("token_usage") or llm_output.get("usage") or {}
-    input_tokens = _int(usage.get("prompt_tokens") or usage.get("input_tokens"))
-    output_tokens = _int(usage.get("completion_tokens") or usage.get("output_tokens"))
-    if input_tokens or output_tokens:
-        return input_tokens, output_tokens
+    return _extract_usage_details(response)[:2]
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _first_count(*values: Any) -> int | None:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            if isinstance(value, float) and not isfinite(value):
+                continue
+            return max(0, int(value))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
+
+
+def _input_output(usage: Mapping[str, Any]) -> tuple[int, int]:
+    return (_first_count(usage.get("prompt_tokens"), usage.get("input_tokens")) or 0,
+            _first_count(usage.get("completion_tokens"), usage.get("output_tokens")) or 0)
+
+
+def _cache_counts(usage: Mapping[str, Any]) -> tuple[int | None, int | None]:
+    details = _mapping(usage.get("input_token_details"))
+    prompt_details = _mapping(usage.get("prompt_tokens_details"))
+    response_details = _mapping(usage.get("input_tokens_details"))
+    # These are alternative representations of the same measurements, not
+    # independent token buckets to add together. Explicit zero is authoritative.
+    return (
+        _first_count(usage.get("cache_read_input_tokens"), details.get("cache_read"),
+                     details.get("priority_cache_read"), details.get("flex_cache_read"),
+                     prompt_details.get("cached_tokens"), response_details.get("cached_tokens")),
+        _first_count(usage.get("cache_creation_input_tokens"), details.get("cache_creation")),
+    )
+
+
+def _usage_payload(value: Any) -> Mapping[str, Any]:
+    data = _mapping(value)
+    return _mapping(data.get("token_usage")) or _mapping(data.get("usage")) or data
+
+
+def _extract_usage_details(response: Any) -> tuple[int, int, int, int]:
+    usage = _usage_payload(getattr(response, "llm_output", None))
+    input_tokens, output_tokens = _input_output(usage)
+    cache_read, cache_write = _cache_counts(usage)
+    message_input = message_output = message_read = message_write = 0
+    seen_messages: set[int] = set()
 
     for generation_batch in getattr(response, "generations", None) or []:
         for generation in generation_batch:
             message = getattr(generation, "message", None)
-            metadata = getattr(message, "usage_metadata", None) or {}
-            input_tokens += _int(metadata.get("input_tokens"))
-            output_tokens += _int(metadata.get("output_tokens"))
-    return input_tokens, output_tokens
+            if message is None or id(message) in seen_messages:
+                continue
+            seen_messages.add(id(message))
+            metadata = _mapping(getattr(message, "usage_metadata", None))
+            provider_metadata = _usage_payload(getattr(message, "response_metadata", None))
+            tokens_in, tokens_out = _input_output(metadata)
+            if not (tokens_in or tokens_out):
+                tokens_in, tokens_out = _input_output(provider_metadata)
+            read, write = _cache_counts(metadata)
+            raw_read, raw_write = _cache_counts(provider_metadata)
+            message_input += tokens_in
+            message_output += tokens_out
+            message_read += (read if read is not None else raw_read) or 0
+            message_write += (write if write is not None else raw_write) or 0
+    # llm_output reports the request aggregate; message usage often repeats it.
+    # Use messages only for fields absent from that aggregate, never add both.
+    if not (input_tokens or output_tokens):
+        input_tokens, output_tokens = message_input, message_output
+    return (input_tokens, output_tokens,
+            cache_read if cache_read is not None else message_read,
+            cache_write if cache_write is not None else message_write)
 
 
 def _estimate_output_tokens(response: Any) -> int:
@@ -264,7 +331,4 @@ def _estimate_tokens(value: str) -> int:
 
 
 def _int(value: Any) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
+    return _first_count(value) or 0

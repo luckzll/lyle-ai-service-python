@@ -6,10 +6,13 @@ from threading import Lock
 import httpx
 
 from app.core.config import settings
+from app.rag.cache import BoundedTTLCache
+from app.rag.cache_scope import current_retrieval_cache_scope, current_retrieval_user
 from app.usage.manual import begin_external_call, estimate_text_tokens, finish_external_call
 
 
 EMBEDDING_DIMENSION = settings.embedding_dimension
+_query_cache = BoundedTTLCache(max_entries=256, max_bytes=8 * 1024 * 1024)
 _readiness_lock = Lock()
 _readiness = {
     "ready": False,
@@ -33,6 +36,56 @@ def embed_text(text: str) -> list[float]:
         raise
     _set_embedding_readiness(True, "向量服务已就绪。")
     return vector
+
+
+def embedding_identity() -> tuple[str, ...]:
+    """Endpoint and credentials partition cache entries without retaining secrets."""
+    return (
+        settings.embedding_provider.lower(), settings.embedding_model, str(settings.embedding_dimension),
+        hashlib.sha256(settings.embedding_base_url.rstrip("/").encode("utf-8")).hexdigest(),
+        hashlib.sha256(settings.embedding_api_key.encode("utf-8")).hexdigest(),
+    )
+
+
+def query_cache_identity() -> tuple[str, ...] | None:
+    # Only internal request scopes can establish this user identity. A cache
+    # without it would turn a pure helper into an accidental cross-user store.
+    trusted = current_retrieval_cache_scope()
+    principal = (trusted.user_id, trusted.conversation_id) if trusted else current_retrieval_user()
+    from app.rag.query_context import current_query_context
+
+    context = current_query_context()
+    if principal is None and context is not None and context.user_id:
+        principal = (context.user_id, context.conversation_id)
+    if principal is None:
+        return None
+    # Do not combine a different user's history with the established principal.
+    history = context.history_fingerprint if context is not None and context.user_id == principal[0] else ""
+    conversation = str(principal[1] or (context.conversation_id if context is not None and context.user_id == principal[0] else ""))
+    return str(principal[0]), conversation, str(history or "")
+
+
+def embed_query(text: str) -> list[float]:
+    """Cache query vectors only; document ingestion and memory writes use embed_text."""
+    principal = query_cache_identity()
+    if not settings.embedding_cache_enabled or not text or principal is None:
+        return embed_text(text)
+    identity = embedding_identity()
+    key = (principal, identity, hashlib.sha256(text.encode("utf-8")).hexdigest())
+    _query_cache.configure(max_entries=settings.embedding_cache_max_entries, max_bytes=settings.embedding_cache_max_bytes)
+
+    def cacheable(vector: list[float]) -> bool:
+        return (len(vector) == int(identity[2]) and bool(vector)
+                and all(isinstance(value, (int, float)) and math.isfinite(value) for value in vector))
+
+    return _query_cache.get_or_compute(
+        key, lambda: embed_text(text), ttl_seconds=settings.embedding_cache_ttl_seconds,
+        cacheable=cacheable, valid=lambda: embedding_identity() == identity,
+    ).value
+
+
+def clear_embedding_query_cache() -> None:
+    _query_cache.invalidate()
 
 
 def warm_up_embedding_model() -> dict[str, object]:
@@ -68,11 +121,15 @@ def _set_embedding_readiness(ready: bool, message: str) -> None:
         })
 
 
-@lru_cache(maxsize=1)
 def _fastembed_model():
+    return _cached_fastembed_model(settings.embedding_model)
+
+
+@lru_cache(maxsize=1)
+def _cached_fastembed_model(model_name: str):
     from fastembed import TextEmbedding
 
-    return TextEmbedding(model_name=settings.embedding_model)
+    return TextEmbedding(model_name=model_name)
 
 
 def _embed_with_fastembed(text: str) -> list[float]:

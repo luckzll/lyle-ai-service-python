@@ -369,6 +369,8 @@ def test_sync_chat_response_uses_safe_debug_boundary(monkeypatch) -> None:
         conversationId="conversation-1",
         message="解释 QKV",
         knowledgeBaseIds=["kb-1"],
+        knowledgeScope={"userId": "user-1", "authorizationRevision": "auth", "knowledgeBaseRevisions": {"kb-1": "v1"},
+                        "allowedDocumentIds": {"kb-1": ["doc-1"]}, "documentRevisions": {"kb-1": {"doc-1": "legacy"}}},
     ), BackgroundTasks())
     payload = response.model_dump(by_alias=True)
 
@@ -412,6 +414,8 @@ def test_stream_meta_uses_same_safe_debug_boundary(monkeypatch) -> None:
         conversationId="conversation-1",
         message="解释 QKV",
         knowledgeBaseIds=["kb-1"],
+        knowledgeScope={"userId": "user-1", "authorizationRevision": "auth", "knowledgeBaseRevisions": {"kb-1": "v1"},
+                        "allowedDocumentIds": {"kb-1": ["doc-1"]}, "documentRevisions": {"kb-1": {"doc-1": "legacy"}}},
         stream=True,
     )))
     meta = events["meta"][0]

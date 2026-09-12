@@ -111,8 +111,12 @@ def test_rag_hybrid_merges_vector_and_keyword_hits(monkeypatch, tmp_path: Path):
     def fake_qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int):
         return [{
             "doc_id": "file-hybrid",
+            "knowledge_base_id": "kb-hybrid",
             "title": "hybrid.txt #1",
             "chunk": "海蓝星是一颗被海洋覆盖的虚构星球。",
+            "chunkIndex": "1",
+            "startChar": "0",
+            "endChar": str(len("海蓝星是一颗被海洋覆盖的虚构星球。")),
             "score": "0.62",
             "backend": "qdrant",
             "hitModes": "vector",
@@ -141,8 +145,12 @@ def test_rag_diagnostics_preserves_hit_modes(monkeypatch, tmp_path: Path):
     def fake_qdrant_search(question: str, knowledge_base_ids: list[str], top_k: int):
         return [{
             "doc_id": "file-hybrid-debug",
+            "knowledge_base_id": "kb-hybrid-debug",
             "title": "hybrid-debug.txt #1",
             "chunk": "MVP 范围包含聊天、知识库和记忆确认。",
+            "chunkIndex": "1",
+            "startChar": "0",
+            "endChar": str(len("MVP 范围包含聊天、知识库和记忆确认。")),
             "score": "0.7",
             "backend": "qdrant",
             "hitModes": "vector",

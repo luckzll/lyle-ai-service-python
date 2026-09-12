@@ -9,6 +9,7 @@ def enqueue_ingest_task(request: IngestRequest) -> IngestResponse:
         knowledge_base_id=request.knowledge_base_id,
         storage_path=request.storage_path,
         user_id=request.user_id,
+        retrieval_revision=request.retrieval_revision,
         storage_ref=StorageObjectRef(
             storage_path=request.storage_path,
             storage_provider=request.storage_provider,

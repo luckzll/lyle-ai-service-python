@@ -31,11 +31,10 @@ def build_user_prompt(question: str, contexts: list[dict[str, str]], memory_cont
         f"来源：{item['title']}\n内容：{item['chunk']}" for item in contexts
     )
     return (
-        runtime_text +
-        memory_text +
         "请优先根据以下知识库资料回答；如果资料不足，请明确说明不确定。\n\n"
         "只输出回答正文，不要输出参考来源列表，系统会在回答末尾自动追加来源。\n\n"
         f"{context_text}\n\n"
+        f"{runtime_text}{memory_text}"
         f"用户问题：{question}"
     )
 

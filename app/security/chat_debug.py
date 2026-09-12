@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.security.secret_masker import mask_secrets
+from app.chat_progress import sanitize_timings
 
 
 DEBUG_VERSION = "chat-debug-v1"
@@ -163,6 +164,8 @@ def _sanitize_agent_trace(
         item: dict[str, object] = {"agent": agent}
         _copy_bool(raw, item, "skipped")
         _copy_int(raw, item, "elapsedMs")
+        if agent in {"rag_agent", "writer_agent", "reviewer_agent", "gather_agent"} and isinstance(raw.get("timings"), dict):
+            item["timings"] = sanitize_timings(raw["timings"])
 
         if agent == "supervisor_agent":
             _copy_text(raw, item, "intent", 48, budget)
@@ -179,6 +182,8 @@ def _sanitize_agent_trace(
             _copy_int(raw, item, "contextCount")
             _copy_int(raw, item, "queryCount")
             _copy_bool(raw, item, "sufficient")
+            if isinstance(raw.get("retrievalPlan"), dict):
+                item["retrievalPlan"] = _sanitize_retrieval_plan(raw["retrievalPlan"], budget)
             if isinstance(raw.get("decision"), dict):
                 item["decision"] = _sanitize_decision(raw["decision"], budget)
             item["queries"] = _sanitize_queries(rag_queries, budget)
@@ -210,6 +215,41 @@ def _sanitize_agent_trace(
             _copy_text(raw, item, "action", 64, budget)
             _copy_text(raw, item, "status", 48, budget)
         result.append(item)
+    return result
+
+
+def _sanitize_retrieval_plan(raw: dict[str, object], budget: _DebugBudget) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key in ("mode", "fusionMode"):
+        _copy_text(raw, result, key, 32, budget)
+    for key in ("actualQueryCount", "candidateCount", "rerankSelectedCount", "parallelWorkers"):
+        value = raw.get(key, raw.get("selectedCount") if key == "rerankSelectedCount" else None)
+        if value is not None and not isinstance(value, bool):
+            try:
+                result[key] = max(0, int(value))
+            except (TypeError, ValueError, OverflowError):
+                pass
+    if isinstance(raw.get("adaptiveUsed"), bool):
+        result["adaptiveUsed"] = raw["adaptiveUsed"]
+    cache = raw.get("candidateCache")
+    if isinstance(cache, dict):
+        safe_cache: dict[str, int] = {}
+        for key in ("hit", "miss", "shared", "bypass"):
+            value = cache.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                safe_cache[key] = max(0, int(value))
+            except (TypeError, ValueError, OverflowError):
+                pass
+        result["candidateCache"] = safe_cache
+    resolution = raw.get("queryResolution")
+    if isinstance(resolution, dict):
+        safe_resolution: dict[str, object] = {}
+        for key, limit in (("method", 64), ("reason", 160),
+                           ("originalQuestion", 500), ("effectiveQuestion", 500)):
+            _copy_text(resolution, safe_resolution, key, limit, budget)
+        result["queryResolution"] = safe_resolution
     return result
 
 

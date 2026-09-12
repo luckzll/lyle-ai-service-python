@@ -1,0 +1,1876 @@
+{
+  "fixture_sha256": "12cd7ae7265158ec60aa5adc54ca75567fda420da286a7cc1e1cf32c77cf8f15",
+  "selection": "Initial six category representatives plus R013/R014 ranking regressions and R021 known missing-history evidence, selected after retrieval results for diagnostic sensitivity. Not a random quality estimate.",
+  "instructions": "Generate using only question, history and the selected contexts. review_only is for independent assessment after generation; never put it in the generation prompt.",
+  "cases": [
+    {
+      "case_id": "R011",
+      "category": "synonym",
+      "question": "关掉网页后还能回来接着看回答吗？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "overview",
+          "title": "星桥产品说明 #2",
+          "chunk": "星桥的离线部署包代号是 Orion。离线部署不包含外部网页搜索，需要管理员另行启用联网连接器。",
+          "score": "0.5326",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥产品说明",
+          "startChar": "37",
+          "endChar": "84",
+          "query": "关掉网页后还能回来接着看回答吗？"
+        },
+        {
+          "doc_id": "runtime",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.5159",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "query": "关掉网页后还能回来接着看回答吗？"
+        },
+        {
+          "doc_id": "runtime",
+          "title": "星桥执行与恢复 #1",
+          "chunk": "每次回答都由独立的 turnId 标识。浏览器关闭不会取消后台任务，再次进入会话时按 turnId 查询执行状态。",
+          "score": "0.5034",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "0",
+          "endChar": "57",
+          "query": "关掉网页后还能回来接着看回答吗？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #3",
+          "chunk": "星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。",
+          "score": "0.4419",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "105",
+          "endChar": "150",
+          "query": "关掉网页后还能回来接着看回答吗？"
+        },
+        {
+          "doc_id": "backup",
+          "title": "星桥备份与恢复 #3",
+          "chunk": "删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。",
+          "score": "0.4393",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "79",
+          "endChar": "127",
+          "query": "关掉网页后还能回来接着看回答吗？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "overview",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥产品说明 #2",
+          "chunk": "星桥的离线部署包代号是 Orion。离线部署不包含外部网页搜索，需要管理员另行启用联网连接器。",
+          "score": "0.5326",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥产品说明",
+          "startChar": "37",
+          "endChar": "84",
+          "raw_score": "0.5326",
+          "query": "关掉网页后还能回来接着看回答吗？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5326
+        },
+        {
+          "doc_id": "runtime",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.5159",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "raw_score": "0.5159",
+          "query": "关掉网页后还能回来接着看回答吗？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5159
+        },
+        {
+          "doc_id": "runtime",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥执行与恢复 #1",
+          "chunk": "每次回答都由独立的 turnId 标识。浏览器关闭不会取消后台任务，再次进入会话时按 turnId 查询执行状态。",
+          "score": "0.5034",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "0",
+          "endChar": "57",
+          "raw_score": "0.5034",
+          "query": "关掉网页后还能回来接着看回答吗？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5034
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #3",
+          "chunk": "星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。",
+          "score": "0.4419",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "105",
+          "endChar": "150",
+          "raw_score": "0.4419",
+          "query": "关掉网页后还能回来接着看回答吗？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4419
+        },
+        {
+          "doc_id": "backup",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥备份与恢复 #3",
+          "chunk": "删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。",
+          "score": "0.4393",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "79",
+          "endChar": "127",
+          "raw_score": "0.4393",
+          "query": "关掉网页后还能回来接着看回答吗？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4393
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/runtime#1"
+            ],
+            "quote": "再次进入会话时按 turnId 查询执行状态"
+          }
+        ],
+        "expected_answer_facts": [
+          "再次进入会话时按 turnId 查询执行状态"
+        ]
+      }
+    },
+    {
+      "case_id": "R013",
+      "category": "synonym",
+      "question": "为啥相关程度很高还是没答全？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.5044",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "query": "为啥相关程度很高还是没答全？"
+        },
+        {
+          "doc_id": "cache",
+          "title": "星桥缓存规则 #1",
+          "chunk": "检索缓存有效期是 180 秒。文档新增、替换或删除时会立即使相关缓存失效。",
+          "score": "0.4907",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥缓存规则",
+          "startChar": "0",
+          "endChar": "37",
+          "query": "为啥相关程度很高还是没答全？"
+        },
+        {
+          "doc_id": "runtime",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.4344",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "query": "为啥相关程度很高还是没答全？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #1",
+          "chunk": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。",
+          "score": "0.4188",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "0",
+          "endChar": "50",
+          "query": "为啥相关程度很高还是没答全？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #3",
+          "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+          "score": "0.4136",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "91",
+          "endChar": "141",
+          "query": "为啥相关程度很高还是没答全？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.5044",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "raw_score": "0.5044",
+          "query": "为啥相关程度很高还是没答全？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5044
+        },
+        {
+          "doc_id": "cache",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥缓存规则 #1",
+          "chunk": "检索缓存有效期是 180 秒。文档新增、替换或删除时会立即使相关缓存失效。",
+          "score": "0.4907",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥缓存规则",
+          "startChar": "0",
+          "endChar": "37",
+          "raw_score": "0.4907",
+          "query": "为啥相关程度很高还是没答全？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4907
+        },
+        {
+          "doc_id": "runtime",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.4344",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "raw_score": "0.4344",
+          "query": "为啥相关程度很高还是没答全？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4344
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #1",
+          "chunk": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。",
+          "score": "0.4188",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "0",
+          "endChar": "50",
+          "raw_score": "0.4188",
+          "query": "为啥相关程度很高还是没答全？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4188
+        },
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #2",
+          "chunk": "星桥 2.4.1 在 2026 年 8 月 27 日发布，只修复连接断开后的恢复状态，没有调整套餐额度。",
+          "score": "0.4062",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥发布手册",
+          "startChar": "67",
+          "endChar": "119",
+          "raw_score": "0.4062",
+          "query": "为啥相关程度很高还是没答全？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4062
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/search#2"
+            ],
+            "quote": "相关性分数高并不等于所有问题要点都已经被覆盖"
+          }
+        ],
+        "expected_answer_facts": [
+          "相关性分数高并不等于所有问题要点都已经被覆盖"
+        ]
+      }
+    },
+    {
+      "case_id": "R014",
+      "category": "synonym",
+      "question": "检索时整库一遍遍扫太费时怎么办？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "service",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.5086",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "query": "检索时整库一遍遍扫太费时怎么办？"
+        },
+        {
+          "doc_id": "overview",
+          "title": "星桥产品说明 #1",
+          "chunk": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。",
+          "score": "0.4875",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥产品说明",
+          "startChar": "0",
+          "endChar": "35",
+          "query": "检索时整库一遍遍扫太费时怎么办？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #4",
+          "chunk": "知识库删除文件后应同时失效关键词索引和检索缓存。缓存键包含知识库版本及访问范围。",
+          "score": "0.4515",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "143",
+          "endChar": "183",
+          "query": "检索时整库一遍遍扫太费时怎么办？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.4358",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "query": "检索时整库一遍遍扫太费时怎么办？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #3",
+          "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+          "score": "0.4302",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "3",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "91",
+          "endChar": "141",
+          "query": "检索时整库一遍遍扫太费时怎么办？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "service",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.5086",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "raw_score": "0.5086",
+          "query": "检索时整库一遍遍扫太费时怎么办？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5086
+        },
+        {
+          "doc_id": "overview",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥产品说明 #1",
+          "chunk": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。",
+          "score": "0.4875",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥产品说明",
+          "startChar": "0",
+          "endChar": "35",
+          "raw_score": "0.4875",
+          "query": "检索时整库一遍遍扫太费时怎么办？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4875
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #4",
+          "chunk": "知识库删除文件后应同时失效关键词索引和检索缓存。缓存键包含知识库版本及访问范围。",
+          "score": "0.4515",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "143",
+          "endChar": "183",
+          "raw_score": "0.4515",
+          "query": "检索时整库一遍遍扫太费时怎么办？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4515
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.4358",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "raw_score": "0.4358",
+          "query": "检索时整库一遍遍扫太费时怎么办？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4358
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #3",
+          "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+          "score": "0.4302",
+          "backend": "keyword,parent_child",
+          "hitModes": "keyword,parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "91",
+          "endChar": "141",
+          "raw_score": "0.4302",
+          "query": "检索时整库一遍遍扫太费时怎么办？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4302
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/service#3"
+            ],
+            "quote": "倒排索引保存词项到片段的映射，可以减少重复扫描"
+          }
+        ],
+        "expected_answer_facts": [
+          "倒排索引保存词项到片段的映射，可以减少重复扫描"
+        ]
+      }
+    },
+    {
+      "case_id": "R020",
+      "category": "context_missing",
+      "question": "这个能恢复多久？",
+      "history": [
+        {
+          "role": "user",
+          "content": "我刚删除一个知识库。"
+        }
+      ],
+      "baseline_contexts": [
+        {
+          "doc_id": "backup",
+          "title": "星桥备份与恢复 #3",
+          "chunk": "删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。",
+          "score": "0.4602",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "79",
+          "endChar": "127",
+          "query": "这个能恢复多久？"
+        },
+        {
+          "doc_id": "runtime",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.4602",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "query": "这个能恢复多久？"
+        },
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.4189",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "query": "这个能恢复多久？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.4148",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "query": "这个能恢复多久？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.4128",
+          "backend": "keyword,parent_child",
+          "hitModes": "keyword,parent_child",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "query": "这个能恢复多久？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "backup",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥备份与恢复 #3",
+          "chunk": "删除知识库后有 14 天回收期。管理员可以在回收期内恢复，回收期结束后不能通过普通恢复入口找回。",
+          "score": "0.4602",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "79",
+          "endChar": "127",
+          "raw_score": "0.4602",
+          "query": "这个能恢复多久？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4602
+        },
+        {
+          "doc_id": "runtime",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥执行与恢复 #4",
+          "chunk": "知识库检索结束后才能生成有依据的正文。不需要全文复核的文本回答可以逐段返回。",
+          "score": "0.4602",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥执行与恢复",
+          "startChar": "155",
+          "endChar": "193",
+          "raw_score": "0.4602",
+          "query": "这个能恢复多久？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4602
+        },
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.4189",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "raw_score": "0.4189",
+          "query": "这个能恢复多久？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4189
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.4148",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "raw_score": "0.4148",
+          "query": "这个能恢复多久？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4148
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.4128",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "raw_score": "0.4128",
+          "query": "这个能恢复多久？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4128
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/backup#3"
+            ],
+            "quote": "有 14 天回收期"
+          }
+        ],
+        "expected_answer_facts": [
+          "有 14 天回收期"
+        ]
+      }
+    },
+    {
+      "case_id": "R021",
+      "category": "context_missing",
+      "question": "具体改了什么？",
+      "history": [
+        {
+          "role": "user",
+          "content": "我看到了星桥 2.4.1。"
+        }
+      ],
+      "baseline_contexts": [
+        {
+          "doc_id": "security",
+          "title": "星桥权限规则 #1",
+          "chunk": "工作区授权遵循最小权限原则。只读连接器可以查询资料，不能创建、修改或删除外部系统记录。",
+          "score": "0.3121",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥权限规则",
+          "startChar": "0",
+          "endChar": "43",
+          "query": "具体改了什么？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #1",
+          "chunk": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。",
+          "score": "0.3121",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "0",
+          "endChar": "50",
+          "query": "具体改了什么？"
+        },
+        {
+          "doc_id": "security",
+          "title": "星桥权限规则 #2",
+          "chunk": "邮件发送属于外部写操作，需要单独确认收件人和正文。查询邮件不等于批准发送邮件。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "2",
+          "parentTitle": "星桥权限规则",
+          "startChar": "45",
+          "endChar": "84",
+          "query": "具体改了什么？"
+        },
+        {
+          "doc_id": "security",
+          "title": "星桥权限规则 #3",
+          "chunk": "访问知识库资料前必须验证租户和知识库授权。检索不可返回未选择知识库的文件片段。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥权限规则",
+          "startChar": "86",
+          "endChar": "125",
+          "query": "具体改了什么？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "query": "具体改了什么？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "security",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥权限规则 #1",
+          "chunk": "工作区授权遵循最小权限原则。只读连接器可以查询资料，不能创建、修改或删除外部系统记录。",
+          "score": "0.3121",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥权限规则",
+          "startChar": "0",
+          "endChar": "43",
+          "raw_score": "0.3121",
+          "query": "具体改了什么？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.3121
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #1",
+          "chunk": "星桥查询流程包含查询改写、向量召回、关键词召回、候选合并与结果重排。重排最多接收 18 个候选片段。",
+          "score": "0.3121",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "0",
+          "endChar": "50",
+          "raw_score": "0.3121",
+          "query": "具体改了什么？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.3121
+        },
+        {
+          "doc_id": "security",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥权限规则 #2",
+          "chunk": "邮件发送属于外部写操作，需要单独确认收件人和正文。查询邮件不等于批准发送邮件。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "2",
+          "parentTitle": "星桥权限规则",
+          "startChar": "45",
+          "endChar": "84",
+          "raw_score": "0.2559",
+          "query": "具体改了什么？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.2559
+        },
+        {
+          "doc_id": "security",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥权限规则 #3",
+          "chunk": "访问知识库资料前必须验证租户和知识库授权。检索不可返回未选择知识库的文件片段。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥权限规则",
+          "startChar": "86",
+          "endChar": "125",
+          "raw_score": "0.2559",
+          "query": "具体改了什么？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.2559
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #2",
+          "chunk": "资料不足时最多补充两条查询。相关性分数高并不等于所有问题要点都已经被覆盖。",
+          "score": "0.2559",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "2",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "52",
+          "endChar": "89",
+          "raw_score": "0.2559",
+          "query": "具体改了什么？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.2559
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/release#2"
+            ],
+            "quote": "只修复连接断开后的恢复状态"
+          }
+        ],
+        "expected_answer_facts": [
+          "只修复连接断开后的恢复状态"
+        ]
+      }
+    },
+    {
+      "case_id": "R024",
+      "category": "exact",
+      "question": "星桥团队版单文件上限和每库文件数分别是多少？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.752",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.6809",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？"
+        },
+        {
+          "doc_id": "backup",
+          "title": "星桥备份与恢复 #2",
+          "chunk": "恢复演练每季度至少执行一次，验收包括文档数量、权限范围和引用位置。",
+          "score": "0.6246",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "2",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "44",
+          "endChar": "77",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #3",
+          "chunk": "星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。",
+          "score": "0.6166",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "105",
+          "endChar": "150",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？"
+        },
+        {
+          "doc_id": "overview",
+          "title": "星桥产品说明 #1",
+          "chunk": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。",
+          "score": "0.5831",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥产品说明",
+          "startChar": "0",
+          "endChar": "35",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.752",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "raw_score": "0.752",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.752
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.6809",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "raw_score": "0.6809",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.6809
+        },
+        {
+          "doc_id": "backup",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥备份与恢复 #2",
+          "chunk": "恢复演练每季度至少执行一次，验收包括文档数量、权限范围和引用位置。",
+          "score": "0.6246",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "44",
+          "endChar": "77",
+          "raw_score": "0.6246",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.6246
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #3",
+          "chunk": "星桥额度仅在成功完成回答后扣除。模型响应失败不扣额度，用户主动停止时只结算已经生成的内容。",
+          "score": "0.6166",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "105",
+          "endChar": "150",
+          "raw_score": "0.6166",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.6166
+        },
+        {
+          "doc_id": "overview",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥产品说明 #1",
+          "chunk": "星桥是一个虚构的团队知识助手，主要能力是资料检索、项目问答和定时摘要。",
+          "score": "0.5831",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥产品说明",
+          "startChar": "0",
+          "endChar": "35",
+          "raw_score": "0.5831",
+          "query": "星桥团队版单文件上限和每库文件数分别是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5831
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/quota#2"
+            ],
+            "quote": "96 MB"
+          },
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/quota#2"
+            ],
+            "quote": "320 份文件"
+          }
+        ],
+        "expected_answer_facts": [
+          "96 MB",
+          "320 份文件"
+        ]
+      }
+    },
+    {
+      "case_id": "R033",
+      "category": "multi_evidence",
+      "question": "升级前怎样保护索引，应用出问题怎么回滚？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #4",
+          "chunk": "应用升级回滚需要切回上一版本镜像，并恢复与该版本匹配的配置。数据库结构不兼容时应使用事先准备的迁移回退方案。",
+          "score": "0.6292",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥发布手册",
+          "startChar": "166",
+          "endChar": "220",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？"
+        },
+        {
+          "doc_id": "service",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.581",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？"
+        },
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #3",
+          "chunk": "更新索引格式前先导出旧索引清单，再建立新索引并校验记录数量。校验失败时继续使用旧索引。",
+          "score": "0.554",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥发布手册",
+          "startChar": "121",
+          "endChar": "164",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？"
+        },
+        {
+          "doc_id": "search",
+          "title": "星桥知识库检索 #3",
+          "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+          "score": "0.542",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "3",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "91",
+          "endChar": "141",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？"
+        },
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.5159",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #4",
+          "chunk": "应用升级回滚需要切回上一版本镜像，并恢复与该版本匹配的配置。数据库结构不兼容时应使用事先准备的迁移回退方案。",
+          "score": "0.6292",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "4",
+          "parentTitle": "星桥发布手册",
+          "startChar": "166",
+          "endChar": "220",
+          "raw_score": "0.6292",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.6292
+        },
+        {
+          "doc_id": "service",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.581",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "raw_score": "0.581",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.581
+        },
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #3",
+          "chunk": "更新索引格式前先导出旧索引清单，再建立新索引并校验记录数量。校验失败时继续使用旧索引。",
+          "score": "0.554",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥发布手册",
+          "startChar": "121",
+          "endChar": "164",
+          "raw_score": "0.554",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.554
+        },
+        {
+          "doc_id": "search",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥知识库检索 #3",
+          "chunk": "引用位置使用文档标识、片段序号、起始字符与结束字符。相同文字出现在不同位置时必须保留各自的来源位置。",
+          "score": "0.542",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥知识库检索",
+          "startChar": "91",
+          "endChar": "141",
+          "raw_score": "0.542",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.542
+        },
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.5159",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "raw_score": "0.5159",
+          "query": "升级前怎样保护索引，应用出问题怎么回滚？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5159
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/release#3"
+            ],
+            "quote": "先导出旧索引清单"
+          },
+          {
+            "acceptable_chunk_keys": [
+              "kb-guide/release#4"
+            ],
+            "quote": "切回上一版本镜像"
+          }
+        ],
+        "expected_answer_facts": [
+          "先导出旧索引清单",
+          "切回上一版本镜像"
+        ]
+      }
+    },
+    {
+      "case_id": "R038",
+      "category": "unanswerable",
+      "question": "星桥企业版每年订阅价格是多少？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.539",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "query": "星桥企业版每年订阅价格是多少？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.5012",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "query": "星桥企业版每年订阅价格是多少？"
+        },
+        {
+          "doc_id": "quota",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.4993",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "query": "星桥企业版每年订阅价格是多少？"
+        },
+        {
+          "doc_id": "service",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.451",
+          "backend": "keyword",
+          "hitModes": "keyword",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "query": "星桥企业版每年订阅价格是多少？"
+        },
+        {
+          "doc_id": "release",
+          "title": "星桥发布手册 #3",
+          "chunk": "更新索引格式前先导出旧索引清单，再建立新索引并校验记录数量。校验失败时继续使用旧索引。",
+          "score": "0.442",
+          "backend": "parent_child",
+          "hitModes": "parent_child",
+          "chunkIndex": "3",
+          "parentTitle": "星桥发布手册",
+          "startChar": "121",
+          "endChar": "164",
+          "query": "星桥企业版每年订阅价格是多少？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "release",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥发布手册 #1",
+          "chunk": "星桥稳定版 2.4.0 在 2026 年 8 月 18 日发布，支持 18 个重排候选；旧版 2.3.0 最多支持 12 个候选。",
+          "score": "0.539",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥发布手册",
+          "startChar": "0",
+          "endChar": "65",
+          "raw_score": "0.539",
+          "query": "星桥企业版每年订阅价格是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.539
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #1",
+          "chunk": "星桥轻量版每月包含 1200 点额度，每份文件上限为 24 MB。每个知识库最多允许 80 份文件。",
+          "score": "0.5012",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "0",
+          "endChar": "50",
+          "raw_score": "0.5012",
+          "query": "星桥企业版每年订阅价格是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5012
+        },
+        {
+          "doc_id": "quota",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥容量与额度 #2",
+          "chunk": "星桥团队版每月包含 5400 点额度，每份文件上限为 96 MB。每个知识库最多允许 320 份文件。",
+          "score": "0.4993",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥容量与额度",
+          "startChar": "52",
+          "endChar": "103",
+          "raw_score": "0.4993",
+          "query": "星桥企业版每年订阅价格是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4993
+        },
+        {
+          "doc_id": "service",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥问题排查 #3",
+          "chunk": "关键词检索慢时应检查文档统计是否被重复计算。倒排索引保存词项到片段的映射，可以减少重复扫描。",
+          "score": "0.451",
+          "backend": "keyword,tfidf_replay",
+          "hitModes": "keyword,vector",
+          "chunkIndex": "3",
+          "parentTitle": "星桥问题排查",
+          "startChar": "115",
+          "endChar": "161",
+          "raw_score": "0.451",
+          "query": "星桥企业版每年订阅价格是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 4,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015625,
+          "fusion_method": "legacy",
+          "fusion_score": 0.451
+        },
+        {
+          "doc_id": "backup",
+          "knowledge_base_id": "kb-guide",
+          "title": "星桥备份与恢复 #2",
+          "chunk": "恢复演练每季度至少执行一次，验收包括文档数量、权限范围和引用位置。",
+          "score": "0.4414",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "星桥备份与恢复",
+          "startChar": "44",
+          "endChar": "77",
+          "raw_score": "0.4414",
+          "query": "星桥企业版每年订阅价格是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 5,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015384615384615385,
+          "fusion_method": "legacy",
+          "fusion_score": 0.4414
+        }
+      ],
+      "review_only": {
+        "answerable": false,
+        "expected_evidence": [],
+        "expected_answer_facts": []
+      }
+    },
+    {
+      "case_id": "R043",
+      "category": "isolation",
+      "question": "流沙项目预算是多少？",
+      "history": [],
+      "baseline_contexts": [
+        {
+          "doc_id": "guide-west",
+          "title": "西区运营资料 #1",
+          "chunk": "西区项目代号为流沙，联系人是沈宁。项目预算为 73 万元，目标发布日期为 2026 年 11 月 8 日。",
+          "score": "0.5558",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "西区运营资料",
+          "startChar": "0",
+          "endChar": "53",
+          "query": "流沙项目预算是多少？"
+        },
+        {
+          "doc_id": "guide-west",
+          "title": "西区运营资料 #2",
+          "chunk": "西区流沙项目每周二下午三点同步进展。会议记录保存到西区资料库。",
+          "score": "0.3443",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "西区运营资料",
+          "startChar": "55",
+          "endChar": "86",
+          "query": "流沙项目预算是多少？"
+        },
+        {
+          "doc_id": "guide-west",
+          "title": "西区运营资料 #3",
+          "chunk": "西区试点设备的校验码是 W-7319，仅用于测试数据隔离。",
+          "score": "0.1085",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "西区运营资料",
+          "startChar": "88",
+          "endChar": "117",
+          "query": "流沙项目预算是多少？"
+        }
+      ],
+      "optimized_contexts": [
+        {
+          "doc_id": "guide-west",
+          "knowledge_base_id": "kb-west",
+          "title": "西区运营资料 #1",
+          "chunk": "西区项目代号为流沙，联系人是沈宁。项目预算为 73 万元，目标发布日期为 2026 年 11 月 8 日。",
+          "score": "0.5558",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "1",
+          "parentTitle": "西区运营资料",
+          "startChar": "0",
+          "endChar": "53",
+          "raw_score": "0.5558",
+          "query": "流沙项目预算是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 1,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.01639344262295082,
+          "fusion_method": "legacy",
+          "fusion_score": 0.5558
+        },
+        {
+          "doc_id": "guide-west",
+          "knowledge_base_id": "kb-west",
+          "title": "西区运营资料 #2",
+          "chunk": "西区流沙项目每周二下午三点同步进展。会议记录保存到西区资料库。",
+          "score": "0.3443",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "2",
+          "parentTitle": "西区运营资料",
+          "startChar": "55",
+          "endChar": "86",
+          "raw_score": "0.3443",
+          "query": "流沙项目预算是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 2,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.016129032258064516,
+          "fusion_method": "legacy",
+          "fusion_score": 0.3443
+        },
+        {
+          "doc_id": "guide-west",
+          "knowledge_base_id": "kb-west",
+          "title": "西区运营资料 #3",
+          "chunk": "西区试点设备的校验码是 W-7319，仅用于测试数据隔离。",
+          "score": "0.1085",
+          "backend": "keyword,parent_child,tfidf_replay",
+          "hitModes": "keyword,parent_child,vector",
+          "chunkIndex": "3",
+          "parentTitle": "西区运营资料",
+          "startChar": "88",
+          "endChar": "117",
+          "raw_score": "0.1085",
+          "query": "流沙项目预算是多少？",
+          "query_ranks": [
+            {
+              "queryIndex": 1,
+              "rank": 3,
+              "retrievalFusionScore": null
+            }
+          ],
+          "query_rrf_score": 0.015873015873015872,
+          "fusion_method": "legacy",
+          "fusion_score": 0.1085
+        }
+      ],
+      "review_only": {
+        "answerable": true,
+        "expected_evidence": [
+          {
+            "acceptable_chunk_keys": [
+              "kb-west/guide-west#1"
+            ],
+            "quote": "73 万元"
+          }
+        ],
+        "expected_answer_facts": [
+          "73 万元"
+        ]
+      }
+    }
+  ],
+  "retrieval_variants": [
+    "baseline_rule_no_rerank_pipeline",
+    "optimized_legacy_rule_no_rerank_pipeline"
+  ]
+}
