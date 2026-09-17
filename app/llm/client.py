@@ -3,6 +3,7 @@ import json
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.core.config import settings
+from app.chat_reasoning import emit_reasoning, finish_reasoning
 from app.llm.prompts import build_user_prompt, get_system_prompt
 from app.llm.tasks.chat_model import build_chat_task_model, is_chat_model_configured
 from app.llm.tasks.memory_model import (
@@ -42,9 +43,57 @@ def stream_answer(question: str, contexts: list[dict[str, str]], memory_context:
         HumanMessage(content=build_user_prompt(question, contexts, memory_context)),
     ]
     for chunk in build_chat_task_model(streaming=True).stream(messages):
-        content = chunk.content
+        for kind, delta in _reasoning_deltas(chunk):
+            emit_reasoning(delta, kind)
+        content = _answer_delta(chunk.content)
         if content:
-            yield str(content)
+            finish_reasoning()
+            yield content
+    finish_reasoning()
+
+
+def _reasoning_deltas(chunk):
+    """Read allowlisted public text fields, never encrypted data or metadata."""
+    additional = getattr(chunk, "additional_kwargs", None) or {}
+    blocks = chunk.content if isinstance(chunk.content, list) else []
+    reasoning_block = additional.get("reasoning")
+    if isinstance(reasoning_block, dict):
+        # LangChain's v0.3 Responses adapter omits `type` after the first
+        # reasoning chunk; this explicitly named field still carries summaries.
+        blocks = [*blocks, {**reasoning_block, "type": "reasoning"}]
+    summaries = []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "reasoning":
+            continue
+        for item in block.get("summary", []) if isinstance(block.get("summary"), list) else []:
+            if isinstance(item, dict) and item.get("type") == "summary_text" and isinstance(item.get("text"), str):
+                summaries.append(item["text"])
+        metadata = getattr(chunk, "response_metadata", {}) or {}
+        if (metadata.get("output_version") == "v1" and metadata.get("model_provider") == "openai"
+                and isinstance(block.get("reasoning"), str)):
+            # The OpenAI v1 translator maps summary_text to `reasoning`.
+            summaries.append(block["reasoning"])
+    if summaries:
+        for text in summaries:
+            if text:
+                yield "summary", text
+    elif isinstance(additional.get("reasoning_content"), str) and additional["reasoning_content"]:
+        yield "reasoning", additional["reasoning_content"]
+
+
+def _answer_delta(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        block if isinstance(block, str) else block["text"]
+        for block in content
+        if isinstance(block, str) or (
+            isinstance(block, dict) and block.get("type") in {"text", "output_text"}
+            and isinstance(block.get("text"), str)
+        )
+    )
 
 
 def summarize_memory(existing_summary: str, turns_text: str) -> str:

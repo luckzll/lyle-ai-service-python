@@ -17,6 +17,7 @@ from app.rag.request_scope import request_retrieval_scope
 from app.agents.reviewer_agent import run_reviewer_agent
 from app.memory.overview import is_memory_overview_question
 from app.chat_progress import progress_scope, emit_step, sanitize_timings
+from app.chat_reasoning import reasoning_scope
 from app.streaming_response import HeartbeatStreamingResponse, heartbeat_frames
 from app.streaming_text import IncrementalAnswer, IncrementalReviewBlocked, streaming_policy
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
@@ -255,7 +256,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 publish(_sse("agent.step", payload))
 
         set_model_call_context(usage_context)
-        with progress_scope(progress):
+        def reasoning(event):
+            publish(_sse("reasoning.delta", {**event, "turnId": request.turn_id}))
+
+        with progress_scope(progress), reasoning_scope(reasoning):
             try:
                 attachment_context, attachment_results = build_turn_attachment_context(request)
                 image_tool = _stream_image_tool(message_with_image_attachments(request))

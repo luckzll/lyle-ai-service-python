@@ -3,6 +3,8 @@ from typing import Any
 
 from langchain_openai import ChatOpenAI
 
+from app.llm.providers.reasoning_chat import ReasoningChatOpenAI
+
 
 @dataclass(frozen=True)
 class ChatModelConfig:
@@ -23,7 +25,7 @@ class OpenAICompatibleProvider:
         streaming: bool = False,
         callbacks: list[Any] | None = None,
     ) -> ChatOpenAI:
-        return ChatOpenAI(
+        return ReasoningChatOpenAI(
             api_key=config.api_key or "not-needed",
             base_url=config.base_url,
             model=config.model,

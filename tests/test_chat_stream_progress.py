@@ -7,6 +7,7 @@ from threading import Event
 import pytest
 
 from app.chat_progress import emit_step
+from app.chat_reasoning import emit_reasoning, finish_reasoning
 from app.core.config import settings
 from app.schemas.chat import ChatRequest
 from app.streaming_text import IncrementalAnswer, IncrementalReviewBlocked, streaming_policy
@@ -120,6 +121,32 @@ def test_plain_answer_delta_arrives_before_model_finishes_and_matches_saved_answ
     writer = next(item for item in meta["agentTrace"] if item["agent"] == "writer_agent")
     assert writer["elapsedMs"] >= 0
     assert writer["timings"]["first_delta_ms"] <= writer["timings"]["total_ms"]
+
+
+def test_reasoning_arrives_while_model_runs_and_is_separate_from_saved_answer(monkeypatch, stream_env):
+    release = Event()
+    _, saved = stream_env
+
+    def model(*args):
+        emit_reasoning("先检查相关资料，再整理回答。" * 20)
+        assert release.wait(3), "reasoning was buffered until the answer finished"
+        finish_reasoning()
+        yield "正文只包含回答。"
+
+    monkeypatch.setattr(chat, "stream_answer", model)
+    response = chat.chat_stream(request())
+    try:
+        events = asyncio.run(collect(response, lambda name, data: release.set() if name == "reasoning.delta" else None))
+    finally:
+        release.set()
+    reasoning = [data for name, data in events if name == "reasoning.delta"]
+    assert reasoning and all(item["turnId"] == "progress-turn" for item in reasoning)
+    assert all(item["step"] == "writer_agent" and item["kind"] == "reasoning" for item in reasoning)
+    assert [item["sequence"] for item in reasoning] == list(range(1, len(reasoning) + 1))
+    assert "".join(data["text"] for name, data in events if name == "delta") == "正文只包含回答。"
+    assert any(name == "done" for name, _ in events)
+    asyncio.run(response.background())
+    assert saved == ["正文只包含回答。"]
 
 
 @pytest.mark.parametrize("gate", ["rag", "model_review"])

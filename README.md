@@ -111,11 +111,26 @@ Supervisor -> Memory -> RAG -> Tool -> Writer -> Reviewer -> Memory Write
 流式接口 `/ai/chat/stream` 使用 SSE：
 
 ```text
+event: agent.step
+event: reasoning.delta
 event: delta
 event: meta
 event: error
 event: done
 ```
+
+`agent.step` 是实际执行步骤；`reasoning.delta` 仅在主回答模型返回可展示的
+`reasoning_content` 或推理摘要时发送。未返回时不生成占位思考，也不会自动启用
+模型的思考模式或增加调用次数。摘要和推理内容不混入 `delta` 正文、记忆或用量事件。
+
+```json
+{"turnId":"当前轮次 ID","sequence":1,"step":"writer_agent","delta":"模型返回的片段","kind":"reasoning"}
+```
+
+`kind` 为 `reasoning` 或 `summary`；`sequence` 在每轮思考流中独立递增，与
+`agent.step` 的序号无关。每轮最多接收 16,000 字符，发送前做跨片段凭据脱敏，
+保留短尾部缓冲；达到上限时丢弃可能未完成的尾部。前端可将这些事件放在可折叠的
+思考与执行区域，正文仍使用原有 `delta`、`meta`、`done` 协议。
 
 ## 可选：启用 bge-reranker
 
