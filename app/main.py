@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.agent import router as agent_router
 from app.api.briefings import router as briefings_router
 from app.api.chat import router as chat_router
+from app.api.local_workspace import router as local_workspace_router
 from app.api.connectors import router as connectors_router
 from app.api.evaluation import router as evaluation_router
 from app.api.goals import router as goals_router
@@ -139,6 +140,7 @@ def ready(response: Response) -> dict[str, object]:
 
 
 app.include_router(chat_router, prefix="/ai", tags=["chat"])
+app.include_router(local_workspace_router, prefix="/ai", tags=["local-workspace"])
 app.include_router(briefings_router, prefix="/ai", tags=["briefings"])
 app.include_router(connectors_router, prefix="/ai", tags=["connectors"])
 app.include_router(evaluation_router, prefix="/ai", tags=["evaluation"])
