@@ -1,6 +1,8 @@
 """Model-facing schemas and typed dispatch over the existing execution boundary."""
 import json
 
+from app.chat_tools import run_observed_tool
+
 from app.tools.slots import ARGUMENT_MODELS, ClarifyArgs, slot_records
 from app.tools import tool_registry as legacy
 from app.tools.operation_confirmation import create_pending_operation
@@ -22,6 +24,10 @@ def tool_schemas() -> list[dict]:
 
 
 def execute_native(name: str, raw: dict, user_id: str, conversation_id: str | None, question: str) -> dict:
+    return run_observed_tool(name, lambda: _execute_native(name, raw, user_id, conversation_id, question))
+
+
+def _execute_native(name: str, raw: dict, user_id: str, conversation_id: str | None, question: str) -> dict:
     available = {item["name"] for item in legacy.list_available_tools() if item["enabled"]}
     if name not in available or name not in ARGUMENT_MODELS:
         raise ValueError("工具未启用或不在白名单内。")

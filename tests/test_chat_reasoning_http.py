@@ -15,13 +15,14 @@ import uvicorn
 from app.core.config import settings
 from app.graphs import multi_agent_graph as graph
 from app.llm import client as llm
+from app.tools import native_registry, tool_registry
 from app.main import app
 
 chat = importlib.import_module("app.api.chat")
 
 
-@pytest.mark.parametrize("has_reasoning", [True, False])
-def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(monkeypatch, has_reasoning):
+@pytest.mark.parametrize("has_reasoning,interleaved_tool", [(True, False), (False, False), (True, True)])
+def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(monkeypatch, has_reasoning, interleaved_tool):
     # The display holdback includes configured opaque credentials. Clear local
     # settings so developer/production .env values cannot affect test timing.
     for name in type(settings).model_fields:
@@ -53,6 +54,15 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
         "use_tools": True, "next_agents": ["memory_agent", "tool_agent"]})
     branch_barrier = Barrier(2)
     worker_ids = {}
+    release_weather = Event()
+
+    def weather_result(*args):
+        assert release_weather.wait(5), "Tool running event was not visible during the real HTTP request"
+        return {"ok": True, "content": "上海今天晴，26 摄氏度。"}
+
+    monkeypatch.setattr("app.tools.weather_tool.get_weather", weather_result)
+    monkeypatch.setattr(tool_registry, "list_available_tools", lambda: [{"name": "weather", "enabled": True}])
+    monkeypatch.setattr(tool_registry, "audit_tool_call", lambda **kwargs: None)
 
     def memory(*args):
         worker_ids["memory"] = get_ident()
@@ -62,8 +72,8 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
     def weather(*args, **kwargs):
         worker_ids["tool"] = get_ident()
         branch_barrier.wait(timeout=5)
-        return {"selected_tools": ["weather"], "tool_results": [{"tool": "weather", "ok": True,
-                "content": "上海今天晴，26 摄氏度。"}], "tool_context": "上海今天晴，26 摄氏度。"}
+        result = native_registry.execute_native("weather", {"city": "上海"}, "offline-user", "offline-conversation", "天气")
+        return {"selected_tools": ["weather"], "tool_results": [result], "tool_context": "上海今天晴，26 摄氏度。"}
 
     monkeypatch.setattr(graph, "run_memory_agent", memory)
     monkeypatch.setattr(graph, "run_tool_agent", weather)
@@ -72,12 +82,18 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
     release_model = Event()
     answer = "上海今天晴，气温约 26 摄氏度。" * 12
     provider_reasoning = "我会根据天气工具返回的信息整理回答。" * 12
+    followup_reasoning = "补充查询已经返回，可以整理最后的结论。" * 12 if interleaved_tool else ""
 
     def model_stream(messages):
         worker_ids["writer"] = get_ident()
         if has_reasoning:
             yield AIMessageChunk(content="", additional_kwargs={"reasoning_content": provider_reasoning})
         assert release_model.wait(5), "HTTP client did not receive progress before the model completed"
+        if interleaved_tool:
+            # A mock provider seam exercises interleaving in the real HTTP
+            # transport. Normal production graph tools precede writer streaming.
+            native_registry.execute_native("weather", {"city": "上海"}, "offline-user", "offline-conversation", "天气")
+            yield AIMessageChunk(content="", additional_kwargs={"reasoning_content": followup_reasoning})
         yield AIMessageChunk(content=answer)
 
     monkeypatch.setattr(llm, "build_chat_task_model", lambda **kwargs: SimpleNamespace(stream=model_stream))
@@ -111,6 +127,8 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
                     elif not line and data:
                         payload = json.loads(data)
                         frames.append((name, payload))
+                        if name == "tool.call" and payload["status"] == "running":
+                            release_weather.set()
                         if (has_reasoning and name == "reasoning.delta") or (
                             not has_reasoning and name == "agent.step" and payload["step"] == "writer_agent"
                             and payload["status"] == "running"
@@ -119,6 +137,7 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
                         name, data = "", ""
         assert memory_written.wait(3)
     finally:
+        release_weather.set()
         release_model.set()
         server.should_exit = True
         server_thread.join(timeout=5)
@@ -133,7 +152,7 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
         ("tool_agent", "running"), ("tool_agent", "completed")]
     reasoning = [data for name, data in frames if name == "reasoning.delta"]
     if has_reasoning:
-        assert "".join(data["delta"] for data in reasoning) == provider_reasoning
+        assert "".join(data["delta"] for data in reasoning) == provider_reasoning + followup_reasoning
         assert [data["sequence"] for data in reasoning] == list(range(1, len(reasoning) + 1))
         assert all(set(data) == {"turnId", "sequence", "step", "delta", "kind"}
                    and data["turnId"] == "offline-http-turn" and data["step"] == "writer_agent"
@@ -143,3 +162,15 @@ def test_http_weather_graph_progress_and_optional_reasoning_reach_java_contract(
     assert "".join(data["text"] for name, data in frames if name == "delta") == answer
     assert [name for name, data in frames][-2:] == ["meta", "done"]
     assert saved == [answer]
+    calls = [data for name, data in frames if name == "tool.call"]
+    count = 2 if interleaved_tool else 1
+    assert [data["status"] for data in calls] == ["running", "completed"] * count
+    assert [data["sequence"] for data in calls] == list(range(1, count * 2 + 1))
+    assert calls[0]["callId"] == calls[1]["callId"]
+    assert all(data["turnId"] == "offline-http-turn" and data["tool"] == "weather" for data in calls)
+    assert "上海" not in json.dumps(calls, ensure_ascii=False)
+    if interleaved_tool:
+        reasoning_positions = [index for index, (name, _) in enumerate(frames) if name == "reasoning.delta"]
+        tool_positions = [index for index, (name, _) in enumerate(frames) if name == "tool.call"]
+        assert reasoning_positions[0] < tool_positions[2] < tool_positions[3] < reasoning_positions[1]
+        assert calls[2]["callId"] == calls[3]["callId"] != calls[0]["callId"]

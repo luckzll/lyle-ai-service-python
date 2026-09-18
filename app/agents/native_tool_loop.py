@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from pydantic import ValidationError
 
 from app.core.config import settings
+from app.chat_tools import mcp_display_name, tool_invocation
 from app.llm.tasks.intent_model import build_intent_task_model, is_intent_model_configured
 from app.security.secret_masker import mask_secrets
 from app.tools.native_registry import tool_schemas, execute_native
@@ -104,7 +105,9 @@ def run_native_loop(user_id: str, conversation_id: str | None, question: str,
                 if name not in allowed:
                     result = {"ok": False, "content": "工具不在本轮授权目录。"}
                 elif name == "request_clarification":
-                    args = ClarifyArgs.model_validate(raw)
+                    with tool_invocation(name) as invocation:
+                        args = ClarifyArgs.model_validate(raw)
+                        invocation.finish({"needsClarification": True})
                     return _finish(results, trace, "clarification", args.question)
                 elif key in counts and (not last_results[key].get("retryable")
                                          or counts[key] > settings.agent_loop_max_retries):
@@ -112,15 +115,18 @@ def run_native_loop(user_id: str, conversation_id: str | None, question: str,
                 else:
                     counts[key] = counts.get(key, 0) + 1
                     try:
-                        if name == "knowledge_search":
-                            from app.rag.retriever import retrieve_context_with_diagnostics
-                            args = SearchArgs.model_validate(raw)
-                            evidence = retrieve_context_with_diagnostics(args.query, knowledge_base_ids)
-                            result = {"ok": True, "content": json.dumps(evidence, ensure_ascii=False)}
-                        elif name in mcp_tools:
-                            result = agent_mcp.invoke(user_id, conversation_id, mcp_tools[name], raw, question)
-                        else:
-                            result = execute_native(name, raw, user_id, conversation_id, question)
+                        display_name = mcp_display_name(mcp_tools[name]) if name in mcp_tools else name
+                        with tool_invocation(display_name) as invocation:
+                            if name == "knowledge_search":
+                                from app.rag.retriever import retrieve_context_with_diagnostics
+                                args = SearchArgs.model_validate(raw)
+                                evidence = retrieve_context_with_diagnostics(args.query, knowledge_base_ids)
+                                result = {"ok": True, "content": json.dumps(evidence, ensure_ascii=False)}
+                            elif name in mcp_tools:
+                                result = agent_mcp.invoke(user_id, conversation_id, mcp_tools[name], raw, question)
+                            else:
+                                result = execute_native(name, raw, user_id, conversation_id, question)
+                            invocation.finish(result)
                     except ValidationError as exc:
                         fields = [".".join(map(str, item["loc"])) for item in exc.errors()]
                         return _finish(results, trace, "clarification", "请补充或确认以下字段：" + "、".join(fields))

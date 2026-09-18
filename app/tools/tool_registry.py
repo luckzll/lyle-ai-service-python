@@ -6,6 +6,7 @@ from typing import Callable
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
+from app.chat_tools import run_observed_tool
 from app.core.database import postgres_connection
 from app.memory.overview import is_memory_overview_question
 from app.memory.store import export_memory
@@ -204,6 +205,10 @@ def execute_tool(
     conversation_id: str | None,
     question: str,
 ) -> dict[str, object]:
+    return run_observed_tool(tool_name, lambda: _execute_audited_tool(tool_name, user_id, conversation_id, question))
+
+
+def _execute_audited_tool(tool_name: str, user_id: str, conversation_id: str | None, question: str) -> dict[str, object]:
     started_at = time.perf_counter()
     try:
         result = _execute_tool(tool_name, user_id, conversation_id, question)
