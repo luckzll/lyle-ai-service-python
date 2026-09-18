@@ -15,6 +15,7 @@ from app.agents.tool_agent import run_tool_agent
 from app.agents.writer_agent import run_writer_agent
 from app.core.config import settings
 from app.chat_progress import emit_step, sanitize_timings
+from app.chat_attachments import current_attachments
 from app.memory.overview import build_memory_overview_answer
 from app.rag.query_context import query_context_scope
 
@@ -202,8 +203,10 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
     from app.memory.fact_store import enabled as facts_enabled
     has_work_summary_tool = _has_successful_tool(state["tool_results"], "work_summary") and not facts_enabled()
     memory_context = "" if has_work_summary_tool else state["memory_context"]
+    attachments = current_attachments(state["user_id"])
     writer_tool_context = "\n\n".join(
-        item for item in [state["tool_context"], state["supplemental_context"]] if item
+        item for item in [state["tool_context"], state["supplemental_context"],
+                          attachments.context() if attachments else ""] if item
     )
     writer_input = _writer_input_debug(
         memory_context,

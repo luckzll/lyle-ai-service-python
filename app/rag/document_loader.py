@@ -13,7 +13,11 @@ from pypdf import PdfReader
 
 from app.core.config import settings
 
-TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log"}
+TEXT_SUFFIXES = {".txt", ".md", ".csv", ".json", ".log", *(
+    "." + item for item in "ts tsx js jsx mjs cjs vue svelte py java kt kts go rs c h cpp hpp cs php rb swift sh bash zsh ps1 sql yaml yml toml ini cfg xml html htm css scss sass less graphql gql proto properties gradle scala r dart ipynb".split()
+)}
+TEXT_FILENAMES = {"Dockerfile", "Makefile", "Containerfile", "Jenkinsfile", "Procfile", "README", "LICENSE",
+                  ".gitignore", ".dockerignore", ".editorconfig"}
 PDF_SUFFIXES = {".pdf"}
 DOCX_SUFFIXES = {".docx"}
 XLSX_SUFFIXES = {".xlsx", ".xlsm"}
@@ -42,14 +46,40 @@ class TextChunk:
     end_char: int
 
 
-def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
+class DocumentReadError(ValueError):
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def is_supported_document_name(name: str) -> bool:
+    suffix = Path(name).suffix.lower()
+    return (Path(name).name in TEXT_FILENAMES or suffix in
+            TEXT_SUFFIXES | PDF_SUFFIXES | DOCX_SUFFIXES | XLSX_SUFFIXES | PPTX_SUFFIXES | IMAGE_SUFFIXES | {".xls"})
+
+
+def load_document_text(storage_path: str | StorageObjectRef, *, max_bytes: int | None = None) -> tuple[str, str]:
     ref = storage_path if isinstance(storage_path, StorageObjectRef) else StorageObjectRef(storage_path=storage_path)
     path = _resolve_storage_path(ref)
     title = ref.original_name or path.name
 
-    suffix = path.suffix.lower()
-    if suffix in TEXT_SUFFIXES:
-        return title, path.read_text(encoding="utf-8", errors="ignore")
+    # UUID storage objects may have no suffix; the server-validated upload name
+    # defines the format, including exact names such as Dockerfile.
+    suffix = Path(title).suffix.lower()
+    if max_bytes is not None and path.stat().st_size > max_bytes:
+        raise DocumentReadError("FILE_TOO_LARGE", "文件超过允许读取的大小。")
+    if suffix in TEXT_SUFFIXES or Path(title).name in TEXT_FILENAMES:
+        with path.open("rb") as source:
+            data = source.read(max_bytes + 1) if max_bytes is not None else source.read()
+        if max_bytes is not None and len(data) > max_bytes:
+            raise DocumentReadError("FILE_TOO_LARGE", "文件超过允许读取的大小。")
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise DocumentReadError("INVALID_UTF8", "文本文件不是有效的 UTF-8 编码。") from exc
+        if any(ord(char) < 32 and char not in "\t\n\r" for char in text) or "\x7f" in text:
+            raise DocumentReadError("BINARY_CONTENT", "文件包含二进制控制字符，无法按文本读取。")
+        return title, text
 
     if suffix in PDF_SUFFIXES:
         return title, _read_pdf(path)
@@ -69,13 +99,7 @@ def load_document_text(storage_path: str | StorageObjectRef) -> tuple[str, str]:
     if suffix in IMAGE_SUFFIXES:
         return title, _read_image_ocr(path)
 
-    if suffix == ".doc":
-        return title, (
-            f"文件 {title} 已上传，但当前暂不支持旧版 .doc 格式。"
-            "请转换为 .docx 后再上传。"
-        )
-
-    return title, f"文件 {title} 已上传，但当前暂不支持 {suffix or '未知'} 格式解析。"
+    raise DocumentReadError("UNSUPPORTED_FORMAT", "当前文件格式不支持解析；旧版 DOC 请转换为 DOCX。")
 
 
 def resolve_storage_path(storage_path: str | StorageObjectRef) -> Path:

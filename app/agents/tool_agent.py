@@ -1,4 +1,5 @@
 from app.core.config import settings
+from app.chat_attachments import attachment_planner_context
 from app.chains.tool_router_chain import route_tools_with_llm
 from app.memory.store import format_memory_context, recall_memory
 from app.tools.image_intent import is_image_generation_request
@@ -146,7 +147,9 @@ def _route_tools_with_context(user_id: str, conversation_id: str | None, questio
         context = format_memory_context(memory)
     except Exception:
         context = ""
-    clipped_context = context[: settings.tool_router_context_max_chars]
+    clipped_context = "\n\n".join(part for part in [
+        context[: settings.tool_router_context_max_chars], attachment_planner_context(user_id)
+    ] if part)
     return route_tools_with_llm(question, clipped_context)
 
 

@@ -9,6 +9,43 @@ from app.rag.store import add_document
 from app.rag.document_loader import StorageObjectRef, load_document_text, resolve_storage_path, split_text, split_text_with_metadata
 
 
+def test_all_source_formats_and_exact_names_use_original_name_on_suffixless_storage(tmp_path):
+    from app.rag.document_loader import TEXT_FILENAMES
+    names = ["project." + suffix for suffix in (
+        "ts tsx js jsx mjs cjs vue svelte py java kt kts go rs c h cpp hpp cs php rb swift sh bash zsh ps1 "
+        "sql yaml yml toml ini cfg xml html htm css scss sass less graphql gql proto properties gradle scala r dart ipynb"
+    ).split()] + list(TEXT_FILENAMES)
+    path = tmp_path / "opaque-storage-uuid"
+    path.write_bytes("# UTF8 中文\nvalue = 123\n".encode())
+    for name in names:
+        assert load_document_text(StorageObjectRef(str(path), original_name=name)) == (name, "# UTF8 中文\nvalue = 123\n")
+
+
+@pytest.mark.parametrize("data,code", [(b"\xff\xfe", "INVALID_UTF8"), (b"hello\0world", "BINARY_CONTENT"),
+                                      (b"hello\x0cworld", "BINARY_CONTENT"), (b"hello\x7f", "BINARY_CONTENT")])
+def test_source_files_reject_invalid_utf8_and_binary_control_bytes(tmp_path, data, code):
+    from app.rag.document_loader import DocumentReadError
+    path = tmp_path / "opaque"
+    path.write_bytes(data)
+    with pytest.raises(DocumentReadError) as error:
+        load_document_text(StorageObjectRef(str(path), original_name="main.py"))
+    assert error.value.code == code
+
+
+def test_unsupported_files_raise_and_empty_source_is_valid(tmp_path):
+    from app.rag.document_loader import DocumentReadError
+    path = tmp_path / "opaque"
+    path.write_bytes(b"")
+    with pytest.raises(DocumentReadError) as error:
+        load_document_text(StorageObjectRef(str(path), original_name="archive.zip"))
+    assert error.value.code == "UNSUPPORTED_FORMAT"
+    assert load_document_text(StorageObjectRef(str(path), original_name="Dockerfile")) == ("Dockerfile", "")
+    path.write_bytes(b"1234")
+    with pytest.raises(DocumentReadError) as error:
+        load_document_text(StorageObjectRef(str(path), original_name="main.py"), max_bytes=3)
+    assert error.value.code == "FILE_TOO_LARGE"
+
+
 @pytest.mark.parametrize("provider", [None, "LOCAL"])
 def test_file_uri_reads_native_path_with_unicode_spaces_and_literal_percent(tmp_path, provider):
     # as_uri yields /C:/... on Windows and /tmp/... on POSIX. Percent-encoded

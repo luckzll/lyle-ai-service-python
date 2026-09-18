@@ -3,7 +3,7 @@ from datetime import date as Date, datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Arguments(BaseModel):
@@ -79,6 +79,48 @@ class ClarifyArgs(Arguments):
 
 class EmptyArgs(Arguments):
     pass
+
+
+class AttachmentListArgs(Arguments):
+    offset: int = Field(default=0, ge=0, le=200)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
+class AttachmentReadArgs(Arguments):
+    attachmentId: str | None = Field(default=None, min_length=1, max_length=128)
+    relativePath: str | None = Field(default=None, min_length=1, max_length=512)
+    startLine: int = Field(default=1, ge=1, le=10_000_000)
+    maxLines: int = Field(default=100, ge=1, le=200)
+    startColumn: int = Field(default=0, ge=0, le=5_242_880)
+
+    @model_validator(mode="after")
+    def exactly_one_file(self):
+        if bool(self.attachmentId) == bool(self.relativePath):
+            raise ValueError("提供一个 attachmentId 或唯一 relativePath。")
+        return self
+
+
+class AttachmentSearchArgs(Arguments):
+    query: str = Field(min_length=1, max_length=200)
+    attachmentId: str | None = Field(default=None, min_length=1, max_length=128)
+    relativePath: str | None = Field(default=None, min_length=1, max_length=512)
+    fileOffset: int = Field(default=0, ge=0, le=200)
+    startLine: int = Field(default=1, ge=1, le=10_000_000)
+    fileLimit: int = Field(default=10, ge=1, le=20)
+    limit: int = Field(default=20, ge=1, le=30)
+    caseSensitive: bool = False
+
+    @model_validator(mode="after")
+    def unambiguous_file(self):
+        if self.attachmentId and self.relativePath:
+            raise ValueError("attachmentId 与 relativePath 只能提供一个。")
+        return self
+
+
+ATTACHMENT_ARGUMENT_MODELS = {
+    "attachment_list": AttachmentListArgs, "attachment_read": AttachmentReadArgs,
+    "attachment_search": AttachmentSearchArgs,
+}
 
 
 ARGUMENT_MODELS = {

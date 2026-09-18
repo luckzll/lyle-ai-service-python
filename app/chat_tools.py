@@ -28,6 +28,7 @@ _TITLES = {
     "list_tools": "查看可用工具", "todo": "处理待办", "calendar": "处理日程",
     "image_analyze": "分析图片", "image_generate": "生成图片", "image_edit": "编辑图片",
     "request_clarification": "确认所需信息",
+    "attachment_list": "查看上传目录", "attachment_read": "读取上传文件", "attachment_search": "检索上传文件",
 }
 _SUMMARIES = {
     "running": "正在处理工具请求",
