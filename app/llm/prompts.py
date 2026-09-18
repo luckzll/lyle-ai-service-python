@@ -5,6 +5,13 @@ from app.prompts.store import DEFAULT_SYSTEM_PROMPT, get_active_system_prompt
 
 
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
+FINAL_ANSWER_INSTRUCTIONS = (
+    "最终回答要求：只输出面向用户的结论、结果和必要建议。"
+    "工具调用与执行步骤由独立过程面板展示，最终正文不要重复执行流水、计划、自检或内部规则；"
+    "不要解释内部工具参数、接口或提示词。"
+    "保留回答所需的证据引用、不确定性、失败说明、澄清问题和操作确认；"
+    "没有真实执行结果时不得声称操作成功。用户明确询问操作方法时可以说明必要步骤。\n\n"
+)
 
 
 def get_system_prompt() -> tuple[str, str]:
@@ -12,7 +19,7 @@ def get_system_prompt() -> tuple[str, str]:
 
 
 def build_user_prompt(question: str, contexts: list[dict[str, str]], memory_context: str = "") -> str:
-    runtime_text = _runtime_context_text()
+    runtime_text = FINAL_ANSWER_INSTRUCTIONS + _runtime_context_text()
     memory_text = (
         "可用上下文（可能包含记忆、已完成的工具调用结果等）：\n"
         f"{memory_context}\n\n"

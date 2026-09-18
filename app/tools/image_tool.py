@@ -16,6 +16,7 @@ from typing import Any, Iterator
 import httpx
 
 from app.core.config import settings
+from app.llm.prompts import FINAL_ANSWER_INSTRUCTIONS
 from app.tools.image_intent import is_image_generation_request
 from app.usage.manual import begin_external_call, estimate_text_tokens, finish_external_call
 
@@ -35,6 +36,7 @@ def analyze_image_from_question(question: str) -> dict[str, object]:
     payload = {
         "model": settings.vision_model_name,
         "messages": [
+            {"role": "system", "content": FINAL_ANSWER_INSTRUCTIONS},
             {
                 "role": "user",
                 "content": [

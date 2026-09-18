@@ -112,6 +112,7 @@ Supervisor -> Memory -> RAG -> Tool -> Writer -> Reviewer -> Memory Write
 
 ```text
 event: agent.step
+event: tool.call
 event: reasoning.delta
 event: delta
 event: meta
@@ -131,6 +132,20 @@ event: done
 `agent.step` 的序号无关。每轮最多接收 16,000 字符，发送前做跨片段凭据脱敏，
 保留短尾部缓冲；达到上限时丢弃可能未完成的尾部。前端可将这些事件放在可折叠的
 思考与执行区域，正文仍使用原有 `delta`、`meta`、`done` 协议。
+
+`tool.call` 在真实工具执行边界发送，示例：
+
+```json
+{"turnId":"当前轮次 ID","sequence":1,"callId":"调用唯一 ID","tool":"weather","title":"查询天气","status":"running","summary":"正在处理工具请求"}
+```
+
+每次调用都有独立 `callId`，同工具的重试或再次调用不会合并；序号在工具流内独立递增。
+每轮最多展示 128 次调用。`status` 从 `running` 进入一个终态：`completed`、`failed`、
+`awaiting_confirmation`、`needs_clarification` 或 `interrupted`，终态附带 `durationMs`。
+确认预览只表示等待确认，不表示操作已完成。事件只有工具标识、应用编写的标题和状态，
+不包含原始参数、结果、异常或模型自检。图片批处理作为一次工具调用，逐图结果仍走图片事件。
+MCP 显示标识使用 `mcp_<id>:<注册工具名>`（仅允许字母、数字、`_.:-`，总长最多 128），
+不合法的注册工具名只显示 `mcp_<id>`；执行名称、权限检查和确认流程不变。
 
 ## 可选：启用 bge-reranker
 

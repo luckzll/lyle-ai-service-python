@@ -5,6 +5,7 @@ import json
 from jsonschema import Draft202012Validator
 
 from app.core.config import settings
+from app.chat_tools import mcp_display_name, run_observed_tool
 from app.mcp.tool_registry import list_mcp_tools, get_mcp_server_config
 from app.mcp.tool_executor import invoke_mcp_tool, _get_tool
 from app.mcp.client_manager import infer_tool_risk
@@ -75,6 +76,10 @@ def validate(tool: dict, arguments: dict):
 
 
 def invoke(user_id: str, conversation_id: str | None, selected: dict, arguments: dict, question: str) -> dict:
+    return run_observed_tool(mcp_display_name(selected), lambda: _invoke(user_id, conversation_id, selected, arguments, question))
+
+
+def _invoke(user_id: str, conversation_id: str | None, selected: dict, arguments: dict, question: str) -> dict:
     tool = _get_tool(user_id, int(selected["id"]))
     if not tool["enabled"] or fingerprint(tool) != fingerprint(selected):
         raise ValueError("工具配置已改变，请重新生成调用。")
@@ -97,6 +102,10 @@ def invoke(user_id: str, conversation_id: str | None, selected: dict, arguments:
 
 
 def execute_confirmed(user_id: str, operation: dict) -> dict:
+    return run_observed_tool(str(operation.get("toolName") or "mcp_tool"), lambda: _execute_confirmed(user_id, operation))
+
+
+def _execute_confirmed(user_id: str, operation: dict) -> dict:
     payload = operation["payload"]
     tool = _get_tool(user_id, int(payload["toolId"]))
     if not tool["enabled"] or fingerprint(tool) != payload["fingerprint"]:

@@ -519,8 +519,10 @@ def test_image_analyze_sends_all_images_in_one_vision_request(monkeypatch):
         "对比这两张图 图片1：https://example.com/a.png 图片2：https://example.com/b.png"
     )
 
+    user_message = next(message for message in captured["messages"] if message["role"] == "user")
+    assert any(message["role"] == "system" and "最终回答要求" in message["content"] for message in captured["messages"])
     image_parts = [
-        item for item in captured["messages"][0]["content"]
+        item for item in user_message["content"]
         if item["type"] == "image_url"
     ]
     assert result["ok"] is True

@@ -18,6 +18,7 @@ from app.agents.reviewer_agent import run_reviewer_agent
 from app.memory.overview import is_memory_overview_question
 from app.chat_progress import progress_scope, emit_step, sanitize_timings
 from app.chat_reasoning import reasoning_scope
+from app.chat_tools import run_observed_tool, start_tool_call, tool_scope
 from app.streaming_response import HeartbeatStreamingResponse, heartbeat_frames
 from app.streaming_text import IncrementalAnswer, IncrementalReviewBlocked, streaming_policy
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
@@ -259,7 +260,10 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         def reasoning(event):
             publish(_sse("reasoning.delta", {**event, "turnId": request.turn_id}))
 
-        with progress_scope(progress), reasoning_scope(reasoning):
+        def tool_call(event):
+            publish(_sse("tool.call", {**event, "turnId": request.turn_id}))
+
+        with progress_scope(progress), reasoning_scope(reasoning), tool_scope(tool_call):
             try:
                 attachment_context, attachment_results = build_turn_attachment_context(request)
                 image_tool = _stream_image_tool(message_with_image_attachments(request))
@@ -743,6 +747,7 @@ def _image_chat_stream(
 
     def generate():
         started = perf_counter()
+        image_call = None
         yield _sse("turn.status", {
             "turnId": turn_id,
             "phase": "THINKING",
@@ -757,7 +762,7 @@ def _image_chat_stream(
                         "phase": "ANALYZING",
                         "message": f"正在分析 {len(refs)} 张图片…",
                     })
-                    result = analyze_image_from_question(image_message)
+                    result = run_observed_tool(tool_name, lambda: analyze_image_from_question(image_message))
                     answer = str(result.get("content") or "图片分析没有返回结果。")
                     elapsed_ms = int((perf_counter() - started) * 1000)
                     tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
@@ -823,6 +828,7 @@ def _image_chat_stream(
                 })
                 items: list[dict[str, object]] = []
                 completed_count = 0
+                image_call = start_tool_call(tool_name)
                 for item in iter_image_batch_results(spec):
                     items.append(item)
                     index = int(item.get("index") or 0)
@@ -850,6 +856,7 @@ def _image_chat_stream(
                     })
 
                 result = build_image_batch_result(spec, items)
+                image_call.finish(result)
                 answer = str(result.get("content") or "图片生成没有返回结果。")
                 elapsed_ms = int((perf_counter() - started) * 1000)
                 tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
@@ -910,6 +917,8 @@ def _image_chat_stream(
                 })
                 yield _sse("done", {"turnId": turn_id})
         except (GeneratorExit, BrokenPipeError, ConnectionResetError):
+            if image_call is not None:
+                image_call.finish_status("interrupted")
             logger.info(
                 "Streaming image batch cancelled. user_id=%s conversation_id=%s turn_id=%s",
                 request.user_id,
@@ -918,6 +927,8 @@ def _image_chat_stream(
             )
             raise
         except Exception as exc:
+            if image_call is not None:
+                image_call.finish_status("failed")
             audit_tool_call(
                 tool_name=tool_name,
                 user_id=request.user_id,

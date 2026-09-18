@@ -173,6 +173,10 @@ def test_image_stream_reports_bound_model_usage_before_done(
 
     event_names = [event for event, _ in events]
     assert event_names.count("meta") == 1
+    calls = [data for event, data in events if event == "tool.call"]
+    assert [item["status"] for item in calls] == ["running", "completed"]
+    assert calls[0]["callId"] == calls[1]["callId"]
+    assert all(item["tool"] == tool_name and item["turnId"] == f"turn-{tool_name}" for item in calls)
     assert event_names.index("meta") < event_names.index("done")
     meta = next(data for event, data in events if event == "meta")
     assert meta["debugVersion"] == "chat-debug-v1"
@@ -229,6 +233,9 @@ def test_image_stream_fatal_error_does_not_claim_complete_debug_snapshot(
 
     event_names = [event for event, _ in events]
     assert "error" in event_names
+    calls = [data for event, data in events if event == "tool.call"]
+    assert [item["status"] for item in calls] == ["running", "failed"]
+    assert "provider unavailable" not in json.dumps(calls)
     assert "meta" not in event_names
     assert "done" not in event_names
     assert any(
