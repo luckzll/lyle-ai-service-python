@@ -23,7 +23,7 @@ from app.streaming_response import HeartbeatStreamingResponse, heartbeat_frames
 from app.streaming_text import IncrementalAnswer, IncrementalReviewBlocked, streaming_policy
 from app.graphs.multi_agent_graph import prepare_multi_agent_context, run_multi_agent_graph
 from app.llm.client import generate_answer, stream_answer
-from app.chat_attachments import build_turn_attachment_context, message_with_image_attachments
+from app.chat_attachments import attachment_scope, build_turn_attachment_context, message_with_image_attachments
 from app.memory.store import extract_structured_memory, remember_interaction
 from app.memory.overview import build_memory_overview_answer
 from app.plans.plan_builder import build_plan_candidate
@@ -96,6 +96,11 @@ def write_memory_in_background(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
+    with attachment_scope(request):
+        return _chat(request, background_tasks)
+
+
+def _chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
     usage_context = activate_model_call_context(request)
     effective_message = message_with_image_attachments(request)
     attachment_context, attachment_results = build_turn_attachment_context(request)
@@ -124,6 +129,8 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
         raise HTTPException(status_code=502, detail=f"LangGraph 调用失败：{exc}") from exc
 
     contexts = result.get("contexts") or []
+    if request.attachments:
+        attachment_context, attachment_results = build_turn_attachment_context(request)
     tool_results = list(result.get("tool_results") or [])
     tool_results.extend({"tool": "chat_attachment_parse", **item} for item in attachment_results)
     answer = _image_generate_answer(effective_message, tool_results)
@@ -137,19 +144,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespons
             contexts,
             "\n\n".join(item for item in [
                 str(result.get("memory_context") or ""),
+                str(result.get("tool_context") or ""),
                 project_prompt_context,
                 attachment_context,
                 f"<image-analysis>\n{image_analysis}\n</image-analysis>",
-            ] if item),
-        )
-    elif attachment_context and answer is None:
-        answer, _ = generate_answer(
-            request.message,
-            contexts,
-            "\n\n".join(item for item in [
-                str(result.get("memory_context") or ""),
-                project_prompt_context,
-                attachment_context,
             ] if item),
         )
     if answer is None:
@@ -263,7 +261,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         def tool_call(event):
             publish(_sse("tool.call", {**event, "turnId": request.turn_id}))
 
-        with progress_scope(progress), reasoning_scope(reasoning), tool_scope(tool_call):
+        with progress_scope(progress), reasoning_scope(reasoning), tool_scope(tool_call), attachment_scope(request):
             try:
                 attachment_context, attachment_results = build_turn_attachment_context(request)
                 image_tool = _stream_image_tool(message_with_image_attachments(request))
@@ -332,6 +330,10 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
         [item.get("agent") for item in state.get("agent_trace", []) if isinstance(item, dict)],
     )
     contexts = state.get("contexts") or []
+    if request.attachments:
+        # Tool reads may have advanced deferred/partial records in the shared
+        # request scope; the final writer receives their latest truthful state.
+        attachment_context, attachment_results = build_turn_attachment_context(request)
     project_started = perf_counter()
     emit_step("project_resolver", "running", summary="正在确认项目上下文")
     project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)

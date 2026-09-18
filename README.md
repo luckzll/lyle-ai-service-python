@@ -173,7 +173,7 @@ RERANK_FALLBACK_ENABLED=false
 
 ## 文档解析
 
-当前 MVP 支持文本类文件：
+支持常用文档（PDF、DOCX、XLSX/XLSM、PPTX）以及 UTF-8 文本和源码：
 
 - `.txt`
 - `.md`
@@ -182,5 +182,14 @@ RERANK_FALLBACK_ENABLED=false
 - `.log`
 - `.pdf`
 - `.docx`
+- `.ts/.tsx/.js/.jsx/.mjs/.cjs/.vue/.svelte/.py/.java/.kt/.kts/.go/.rs`
+- `.c/.h/.cpp/.hpp/.cs/.php/.rb/.swift/.sh/.bash/.zsh/.ps1/.sql`
+- `.yaml/.yml/.toml/.ini/.cfg/.xml/.html/.htm/.css/.scss/.sass/.less`
+- `.graphql/.gql/.proto/.properties/.gradle/.scala/.r/.dart/.ipynb`
+- 精确文件名 `Dockerfile`、`Makefile`、`Containerfile`、`Jenkinsfile`、`Procfile`、`README`、`LICENSE`、`.gitignore`、`.dockerignore`、`.editorconfig`
 
-上传文件由 Java 后端写入本地 `ai-app/storage/`，Python 通过 `file://` 路径读取内容并切分到内存 RAG。旧版 `.doc` 暂不支持，建议转换为 `.docx`。
+解析格式根据服务端提供的 `originalName` 识别，支持对象存储的无后缀 UUID 文件。文本必须是有效 UTF-8，拒绝二进制控制字符；不支持的格式返回失败。旧版 `.doc` 暂不支持，建议转换为 `.docx`。
+
+聊天附件每轮最多 200 件，其中普通附件最多 8 件、所有图片最多 8 件，单件 5 MB、总量 20 MB。目录附件必须同时包含服务端校验的 `folderGroupId`、`folderRoot`、`relativePath`。初始清单列出每个附件的真实状态，最多预读 16 个文件，优先 README、依赖清单和入口文件；每文件正文最多 50,000 字符，总正文最多 120,000 字符，规划器初始正文最多 6,000 字符。未读、失败和截断均明确标记。
+
+原生工具规划器可使用 `attachment_list`、`attachment_read`、`attachment_search` 分页查看本轮已授权附件；它们仅接受清单内 ID 或唯一相对路径，不能读取任意服务端路径。文件解析和后续工具调用进入实时过程面板。清单、路径及文件内容均按低信任资料处理，只代表已上传副本，不证明完整本地目录已上传，也不提供本地写回能力。Java 后端负责后续轮次的同会话附件继承。

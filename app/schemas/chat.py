@@ -6,21 +6,21 @@ class ChatAttachmentStorage(BaseModel):
     storageProvider: str | None = None
     bucket: str | None = None
     objectKey: str | None = None
-    originalName: str | None = None
+    originalName: str | None = Field(default=None, max_length=255)
     contentType: str | None = None
     fileSize: int | None = None
 
 
 class ChatAttachment(BaseModel):
-    id: str
+    id: str = Field(min_length=1, max_length=128)
     kind: str
-    name: str
+    name: str = Field(min_length=1, max_length=255)
     mimeType: str
     size: int
     sourceType: str | None = None
-    folderGroupId: str | None = None
-    folderRoot: str | None = None
-    relativePath: str | None = None
+    folderGroupId: str | None = Field(default=None, max_length=128)
+    folderRoot: str | None = Field(default=None, max_length=255)
+    relativePath: str | None = Field(default=None, max_length=512)
     storage: ChatAttachmentStorage
 
 
@@ -37,7 +37,7 @@ class ChatRequest(BaseModel):
     knowledgeScope: dict[str, object] = Field(default_factory=dict)
     stream: bool = False
     aiConfig: dict[str, str] = Field(default_factory=dict)
-    attachments: list[ChatAttachment] = Field(default_factory=list)
+    attachments: list[ChatAttachment] = Field(default_factory=list, max_length=200)
     traceId: str | None = None
     reservationId: str | None = None
     usageBudget: dict[str, int] = Field(default_factory=dict)

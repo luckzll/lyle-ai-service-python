@@ -128,7 +128,10 @@ class Settings(BaseSettings):
     image_batch_retry_attempts: int = 2
     image_batch_retry_base_seconds: float = 0.6
     image_reference_max_count: int = 8
-    chat_attachment_max_count: int = 8
+    chat_attachment_max_count: int = 200
+    chat_attachment_max_regular_count: int = 8
+    chat_attachment_max_image_count: int = 8
+    chat_attachment_preview_max_files: int = 16
     chat_attachment_max_file_bytes: int = 5 * 1024 * 1024
     chat_attachment_max_total_bytes: int = 20 * 1024 * 1024
     chat_attachment_text_max_chars_per_file: int = 50000

@@ -276,10 +276,13 @@ def test_mixed_image_and_file_stream_includes_parsed_file_in_image_request(monke
     meta = next(data for event, data in events if event == "meta")
     assert [item["tool"] for item in meta["toolResults"]] == [
         "chat_attachment_parse",
+        "chat_attachment_parse",
         "image_analyze",
     ]
-    assert meta["toolResults"][0]["attachmentId"] == "file-1"
-    assert meta["toolResults"][0]["extractedChars"] > 0
+    assert meta["toolResults"][0]["attachmentId"] == "image-1"
+    assert meta["toolResults"][0]["status"] == "image"
+    assert meta["toolResults"][1]["attachmentId"] == "file-1"
+    assert meta["toolResults"][1]["extractedChars"] > 0
 
 
 def _chat_attachment(path, attachment_id: str, kind: str, mime_type: str) -> ChatAttachment:
