@@ -283,7 +283,10 @@ def _post_json(path: str, payload: dict[str, object], timeout: float | None = No
         else "IMAGE_ANALYZE"
     )
     try:
-        with httpx.Client(timeout=timeout or settings.llm_timeout_seconds) as client:
+        # The production model proxy intermittently closes large vision POSTs
+        # before returning headers. Ark is reachable directly from the service;
+        # keep image calls off the proxy while other clients retain their config.
+        with httpx.Client(timeout=timeout or settings.llm_timeout_seconds, trust_env=False) as client:
             response = client.post(
                 endpoint,
                 headers={

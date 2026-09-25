@@ -53,13 +53,18 @@ def payload(image, text="为什么图片没有展示出来什么原因"):
 def test_large_screenshot_reaches_provider_and_records_provider_usage(monkeypatch):
     request = payload("data:image/png;base64," + "A" * 1_000_000)
     calls = []
+    client_settings = []
     transport = httpx.MockTransport(lambda req: (
         calls.append(json.loads(req.content)),
         httpx.Response(200, json={"choices": [{"message": {"content": "截图分析"}}],
                                  "usage": {"prompt_tokens": 1500, "completion_tokens": 12}}),
     )[1])
     client_type = httpx.Client
-    monkeypatch.setattr(image_tool.httpx, "Client", lambda **kwargs: client_type(transport=transport, **kwargs))
+    def client(**kwargs):
+        client_settings.append(kwargs)
+        return client_type(transport=transport, **kwargs)
+
+    monkeypatch.setattr(image_tool.httpx, "Client", client)
     monkeypatch.setattr(image_tool, "_image_api_key", lambda: "test-key")
     monkeypatch.setattr("app.usage.manual.report_usage_event", lambda event: None)
     usage = context()
@@ -69,6 +74,7 @@ def test_large_screenshot_reaches_provider_and_records_provider_usage(monkeypatc
 
     assert result["usage"]["prompt_tokens"] == 1500
     assert calls == [request]  # The image is still sent intact to the provider.
+    assert client_settings[0]["trust_env"] is False
     assert usage.input_tokens == 1500
     assert usage.output_tokens == 12
     assert usage.pending_input_tokens == 0
