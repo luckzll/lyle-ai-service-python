@@ -50,6 +50,7 @@ from app.usage.context import (
     set_model_call_context,
     usage_totals,
 )
+from app.usage.callbacks import UsageBudgetExceeded
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -765,7 +766,10 @@ def _image_chat_stream(
                         "message": f"正在分析 {len(refs)} 张图片…",
                     })
                     result = run_observed_tool(tool_name, lambda: analyze_image_from_question(image_message))
-                    answer = str(result.get("content") or "图片分析没有返回结果。")
+                    answer = _strip_unbacked_image_markdown(
+                        str(result.get("content") or "图片分析没有返回结果。"), []
+                    ) or "图片分析没有返回可用的文字结果，请重试。"
+                    result = {**result, "content": answer}
                     elapsed_ms = int((perf_counter() - started) * 1000)
                     tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
                     audit_tool_call(
@@ -949,9 +953,13 @@ def _image_chat_stream(
             yield _sse("turn.status", {
                 "turnId": turn_id,
                 "phase": "FAILED",
-                "message": "图片任务执行失败",
+                "message": _friendly_stream_error(exc),
             })
+            # A handled failure is a complete SSE exchange, not a dropped
+            # connection. Persist the explanation and keep the FAILED phase.
+            yield _sse("delta", {"text": _friendly_stream_error(exc)})
             yield _sse("error", {"message": _friendly_stream_error(exc), "turnId": turn_id})
+            yield _sse("done", {"turnId": turn_id})
 
     def write_memory_after_stream() -> None:
         answer = final_answer_holder.get("answer")
@@ -1115,6 +1123,8 @@ def _answer_claims_memory_saved(answer: str) -> bool:
 
 
 def _friendly_stream_error(exc: Exception) -> str:
+    if isinstance(exc, UsageBudgetExceeded):
+        return str(exc)
     if isinstance(exc, IncrementalReviewBlocked):
         return str(exc)
     text = str(exc)

@@ -237,7 +237,11 @@ def test_image_stream_fatal_error_does_not_claim_complete_debug_snapshot(
     assert [item["status"] for item in calls] == ["running", "failed"]
     assert "provider unavailable" not in json.dumps(calls)
     assert "meta" not in event_names
-    assert "done" not in event_names
+    assert event_names[-1] == "done"
+    assert not any(
+        event == "turn.status" and data.get("phase") == "COMPLETED"
+        for event, data in events
+    )
     assert any(
         event == "turn.status" and data.get("phase") == "FAILED"
         for event, data in events
