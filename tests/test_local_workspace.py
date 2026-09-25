@@ -107,8 +107,9 @@ def test_chat_mode_binds_only_read_tools_and_rejects_model_write_calls(monkeypat
         assert tool_name not in output
 
 
+@pytest.mark.parametrize('mode', ['chat', 'agent'])
 @pytest.mark.parametrize('tool_name', [None, 'workspace_read'])
-def test_disconnected_chat_can_discuss_without_exposing_workspace_tools(monkeypatch, tool_name):
+def test_disconnected_project_can_discuss_without_exposing_workspace_tools(monkeypatch, mode, tool_name):
     seen = {}
 
     class Model:
@@ -128,7 +129,7 @@ def test_disconnected_chat_can_discuss_without_exposing_workspace_tools(monkeypa
                 yield AIMessageChunk(content='可以先讨论需求和实现方案。')
 
     monkeypatch.setattr(module, 'build_chat_model_for_task', lambda *a, **k: Model())
-    output = ''.join(module.frames(request(mode='chat', workspace_connected=False, tool_allowlist=[])))
+    output = ''.join(module.frames(request(mode=mode, workspace_connected=False, tool_allowlist=[])))
     assert seen['plain_model']
     assert ('event: result' in output) is (tool_name is None)
     assert ('event: error' in output) is (tool_name is not None)
@@ -136,7 +137,6 @@ def test_disconnected_chat_can_discuss_without_exposing_workspace_tools(monkeypa
 
 @pytest.mark.parametrize('options', [
     {'mode': 'invalid'},
-    {'mode': 'agent', 'workspace_connected': False},
     {'mode': 'chat', 'tool_allowlist': ['workspace_edit']},
     {'mode': 'chat', 'workspace_connected': False, 'tool_allowlist': ['workspace_read']},
 ])

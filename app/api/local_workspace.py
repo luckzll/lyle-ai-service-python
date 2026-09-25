@@ -74,8 +74,6 @@ class WorkspaceStep(BaseModel):
 
     @model_validator(mode="after")
     def valid_history(self):
-        if self.mode == "agent" and not self.workspace_connected:
-            raise ValueError("执行模式需要先连接本机目录")
         policy_names = (NAMES if self.mode == "agent" else READ_NAMES) if self.workspace_connected else set()
         if self.tool_allowlist is not None and not set(self.tool_allowlist).issubset(policy_names):
             raise ValueError("工具权限超出当前工作区模式")
