@@ -34,6 +34,14 @@ _DISCUSSION_PATTERNS = (
     re.compile(r"(?:生成|制作|输出).{0,20}(?:张图片|张图).{0,10}(?:成本|价格|耗时|需要多久|是否|吗|\?)"),
 )
 
+_IMAGE_TRANSFORM_COMMAND = re.compile(
+    r"^(?:(?:请|麻烦)(?:帮我|给我|替我|为我)?|帮我|给我|替我|为我)?\s*"
+    r"(?:把[^。？！\n]{1,60}?)?"
+    r"(?:整理|汇总|转换|转|做|制作|绘制)成\s*"
+    r"(?:(?:一|1)(?:个|张|幅)\s*)?"
+    r"(?:图片|图像|海报|配图|架构图|流程图|思维导图)"
+)
+
 
 def is_image_generation_request(question: str) -> bool:
     """Only return true for an explicit request to create image output.
@@ -51,6 +59,12 @@ def is_image_generation_request(question: str) -> bool:
         return True
     if any(pattern.search(text) for pattern in _DISCUSSION_PATTERNS):
         return False
+    transform = _IMAGE_TRANSFORM_COMMAND.search(text)
+    if transform:
+        return not re.match(
+            r"\s*(?:的|需要|要)?(?:成本|价格|费用|多少钱|多久|耗时|原理)",
+            text[transform.end():],
+        )
     if _FOLLOWUP_COMMAND.search(text):
         return True
 

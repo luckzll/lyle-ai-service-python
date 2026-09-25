@@ -36,7 +36,10 @@ def analyze_image_from_question(question: str) -> dict[str, object]:
     payload = {
         "model": settings.vision_model_name,
         "messages": [
-            {"role": "system", "content": FINAL_ANSWER_INSTRUCTIONS},
+            {"role": "system", "content": FINAL_ANSWER_INSTRUCTIONS + (
+                "当前仅执行图片识别与分析，没有生成或编辑图片的能力。"
+                "不得声称已生成、修改或上传图片，不得编造图片链接。"
+            )},
             {
                 "role": "user",
                 "content": [
@@ -235,13 +238,34 @@ def _execute_image_item(spec: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
+def _estimate_image_request_tokens(payload: dict[str, object]) -> int:
+    """Reserve text plus a conservative per-image allowance, never Base64 bytes.
+
+    Image encoding length is unrelated to vision tokens. The allowance is only
+    for preflight budgeting; provider-reported usage remains authoritative.
+    """
+    tokens = estimate_text_tokens(str(payload.get("prompt") or ""))
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            tokens += estimate_text_tokens(content)
+        elif isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    tokens += estimate_text_tokens(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    tokens += 4096
+    return tokens
+
+
 def _post_json(path: str, payload: dict[str, object], timeout: float | None = None) -> dict[str, object]:
     endpoint = f"{settings.ark_base_url.rstrip('/')}{path}"
     is_image_call = path.startswith("/images/")
-    prompt = str(payload.get("prompt") or "")
-    if not prompt and isinstance(payload.get("messages"), list):
-        prompt = str(payload.get("messages"))
-    estimated_input = estimate_text_tokens(prompt)
+    estimated_input = _estimate_image_request_tokens(payload)
     reserved_cost = (
         settings.ai_usage_image_cost_micros_per_call
         if is_image_call
