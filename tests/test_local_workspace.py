@@ -2,7 +2,7 @@ import base64
 from io import BytesIO
 import json
 import pytest
-from langchain_core.messages import AIMessageChunk, HumanMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from pydantic import ValidationError
 from PIL import Image
 from app.api import local_workspace as module
@@ -186,6 +186,42 @@ def test_stateless_project_steps_never_recall_another_sessions_history(monkeypat
         output = ''.join(module.frames(request([{'role': 'user', 'content': content}], workspace_connected=False)))
         assert 'event: result' in output
     assert histories == [['项目 A 的代码上下文'], ['项目 B 的任务上下文']]
+
+
+def test_workspace_read_image_results_are_followed_by_real_user_image_content_for_model(monkeypatch):
+    picture = image_url()
+    history = [
+        {'role': 'user', 'content': '读取目录里的 reference.png 并说明图片内容'},
+        {'role': 'assistant', 'content': '读取图片。', 'tool_calls': [
+            {'id': 'image-read', 'name': 'workspace_read', 'args': {'path': 'images/reference.png'}},
+            {'id': 'source-read', 'name': 'workspace_read', 'args': {'path': 'src/main.py'}},
+        ]},
+        {'role': 'tool', 'tool_call_id': 'image-read', 'content': json.dumps({'path': 'images/reference.png', 'kind': 'image'})},
+        {'role': 'tool', 'tool_call_id': 'source-read', 'content': '{"content":"print(1)"}'},
+        {'role': 'user', 'content': '以下是工具读取到的 images/reference.png，请依据实际图片识别。', 'images': [picture]},
+    ]
+    seen = {}
+
+    class Model:
+        def bind_tools(self, tools, **kwargs):
+            seen['tools'] = tools
+            return self
+
+        def stream(self, messages, config):
+            seen['messages'] = messages
+            yield AIMessageChunk(content='图片中是一块红色区域。')
+
+    monkeypatch.setattr(module, 'build_chat_model_for_task', lambda *a, **k: Model())
+    output = ''.join(module.frames(request(history)))
+    assert 'event: result' in output and 'event: error' not in output
+    assert isinstance(seen['messages'][3], ToolMessage)
+    assert isinstance(seen['messages'][4], ToolMessage)
+    assert isinstance(seen['messages'][5], HumanMessage)
+    assert seen['messages'][5].content[-1] == {'type': 'image_url', 'image_url': {'url': picture}}
+    assert {tool['function']['name'] for tool in seen['tools']} == module.NAMES
+    # A synthetic picture message cannot bypass unresolved tool-result ordering.
+    with pytest.raises(ValidationError):
+        request([*history[:3], history[-1]])
 
 
 def test_exception_never_echoes_source_or_upstream_error(monkeypatch, caplog):
