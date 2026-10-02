@@ -95,6 +95,34 @@ def test_prepare_reports_running_and_heartbeat_before_work_finishes(monkeypatch,
     assert next(item for item in progress if item["step"] == "rag_agent" and item["status"] == "completed")["timings"] == {"vector_search_ms": 12}
 
 
+@pytest.mark.parametrize(("project_context", "status", "summary"), [
+    ({"resolver": {"projectId": None, "requiresClarification": False}, "context": {}},
+     "completed", "未匹配到项目，继续使用本轮对话上下文"),
+    ({}, "skipped", "本轮未取得项目识别结果"),
+    ({"resolver": {"projectId": 7, "requiresClarification": True}, "context": {"summary": "private project"}},
+     "completed", "项目归属仍需确认，暂未采用项目上下文"),
+    ({"resolver": {"projectId": 7, "requiresClarification": False}, "context": {"summary": "private project"}},
+     "completed", "已识别关联项目并取得项目上下文"),
+    ({"resolver": {"projectId": 7}, "context": {"error": "private failure"}},
+     "failed", "已识别关联项目，项目上下文暂时不可用"),
+    ({"resolver": {"projectId": None, "reason": "project_store_unavailable:private failure"}, "context": {}},
+     "failed", "项目资料暂时不可用，继续使用本轮对话上下文"),
+    ({"resolver": {"projectId": 7}, "context": {}},
+     "completed", "已识别关联项目，未返回项目上下文"),
+])
+def test_project_feedback_uses_actual_resolution_instead_of_outer_object_truthiness(
+    monkeypatch, stream_env, project_context, status, summary,
+):
+    monkeypatch.setattr(chat, "_project_context_for_response", lambda *_: project_context)
+    monkeypatch.setattr(chat, "stream_answer", lambda *_: iter(["当前回答。 "]))
+    events = asyncio.run(collect(chat.chat_stream(request())))
+    project_events = [data for name, data in events if name == "agent.step" and data["step"] == "project_resolver"]
+    assert [item["status"] for item in project_events] == ["running", status]
+    assert project_events[-1]["summary"] == summary
+    assert "private" not in json.dumps(project_events)
+    assert any(name == "done" for name, _ in events)
+
+
 def test_plain_answer_delta_arrives_before_model_finishes_and_matches_saved_answer(monkeypatch, stream_env):
     release = Event()
     _, saved = stream_env

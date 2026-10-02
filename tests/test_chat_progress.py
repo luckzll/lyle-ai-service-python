@@ -60,6 +60,9 @@ def test_real_graph_reports_parallel_starts_completion_order_and_rag_timings(mon
     assert ("tool_agent", "skipped") in positions
     rag_done = events[positions["rag_agent", "completed"]]
     assert rag_done["timings"] == {"embedding_ms": 12.5}
+    assert rag_done["summary"] == "已检索 1 次，取得 1 个相关资料片段"
+    assert all(event.get("summary") for event in events)
+    assert not any(event.get("summary") == "步骤已完成" for event in events)
     assert next(t for t in result["agent_trace"] if t["agent"] == "rag_agent")["timings"] == rag_done["timings"]
     assert "private" not in json.dumps(events)
     assert "secret" not in json.dumps(events)
@@ -127,6 +130,72 @@ def test_no_dispatched_agents_and_decision_skip_are_explicit(monkeypatch):
     for agent in ("memory_agent", "rag_agent", "tool_agent"):
         assert [e for e in events if e["step"] == agent][-1]["status"] == "skipped"
         assert not any(e["step"] == agent and e["status"] == "completed" for e in events)
+
+
+def test_empty_recall_and_failed_or_pending_tools_have_truthful_feedback(monkeypatch):
+    events = []
+    monkeypatch.setattr(graph, "run_supervisor_agent", lambda *_: _supervisor(tools=True))
+    monkeypatch.setattr(graph, "run_memory_agent", lambda *_: {"memory": {}, "memory_context": ""})
+    monkeypatch.setattr(graph, "run_rag_agent", lambda *_: {
+        "contexts": [], "queries": ["private query"], "sufficiency": {},
+    })
+    monkeypatch.setattr(graph, "run_tool_agent", lambda *_, **__: {
+        "tool_results": [
+            {"ok": False, "error": "private provider error"},
+            {"ok": True, "requiresConfirmation": True, "operation": {"status": "pending", "summary": "private operation"}},
+        ],
+        "tool_context": "private context",
+    })
+    with progress_scope(events.append):
+        graph.prepare_multi_agent_context("u", "c", "q", ["kb"])
+    summaries = {event["step"]: event["summary"] for event in events if event["status"] == "completed"}
+    assert summaries["memory_agent"] == "未召回可用的历史上下文"
+    assert summaries["rag_agent"] == "已检索 1 次，未命中相关资料片段"
+    assert summaries["tool_agent"] == "已返回 2 个工具结果，其中 1 个失败、1 个待确认"
+    assert "private" not in json.dumps(events)
+
+
+@pytest.mark.parametrize(("tool_result", "detail"), [
+    ({"ok": False, "requiresConfirmation": True}, "，其中 1 个失败"),
+    ({"ok": False, "requiresConfirmation": True, "policyBlocked": True}, "，其中 1 个失败"),
+    ({"ok": False, "requiresConfirmation": True, "operation": {"status": "pending"}}, "，其中 1 个失败"),
+    ({"ok": True, "requiresConfirmation": True, "policyBlocked": True, "operation": {"status": "pending"}}, "，其中 1 个失败"),
+    ({"ok": True, "requiresConfirmation": True}, ""),
+    ({"ok": True, "requiresConfirmation": True, "operation": {"status": "confirmed"}}, ""),
+    ({"ok": True, "requiresConfirmation": False, "operation": {"status": "failed"}}, "，其中 1 个失败"),
+    ({"ok": True, "requiresConfirmation": True, "operation": {"status": "pending"}}, "，其中 1 个待确认"),
+    ({"ok": False, "requiresConfirmation": True, "needsClarification": True}, ""),
+])
+def test_tool_feedback_only_reports_confirmation_for_an_actual_pending_operation(monkeypatch, tool_result, detail):
+    events = []
+    monkeypatch.setattr(graph, "run_tool_agent", lambda *_, **__: {
+        "tool_results": [tool_result], "tool_context": "private context",
+    })
+    state = graph._initial_state("u", "c", "q", [])
+    state["supervisor"] = {"use_tools": True}
+    with progress_scope(events.append):
+        graph.tool_agent_node(state)
+    assert events[-1]["summary"] == "已返回 1 个工具结果" + detail
+    assert "private" not in json.dumps(events)
+
+
+@pytest.mark.parametrize(("approved", "skipped", "status", "summary"), [
+    (True, True, "completed", "已完成回答内容的规则检查"),
+    (False, False, "failed", "回答内容检查未通过"),
+])
+def test_review_feedback_distinguishes_local_check_from_disabled_model_and_rejection(
+    monkeypatch, approved, skipped, status, summary,
+):
+    calls, events = [], []
+    monkeypatch.setattr(graph, "run_reviewer_agent", lambda *_, **__: calls.append(True) or {
+        "approved": approved, "skipped": skipped, "reason": "private provider content",
+    })
+    with progress_scope(events.append):
+        graph.reviewer_agent_node(graph._initial_state("u", "c", "q", []))
+    assert calls == [True]
+    assert events[-1]["status"] == status
+    assert events[-1]["summary"] == summary
+    assert "private" not in json.dumps(events)
 
 
 def test_timing_whitelist_rejects_text_unknown_nonfinite_and_out_of_range():
