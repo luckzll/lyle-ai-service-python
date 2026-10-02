@@ -338,9 +338,10 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
     project_started = perf_counter()
     emit_step("project_resolver", "running", summary="正在确认项目上下文")
     project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
-    emit_step("project_resolver", "completed" if project_context else "skipped",
+    project_status, project_feedback = _project_progress_feedback(project_context)
+    emit_step("project_resolver", project_status,
               duration_ms=int((perf_counter() - project_started) * 1000),
-              summary="已确认项目上下文" if project_context else "本轮无需项目上下文")
+              summary=project_feedback)
     project_prompt_context = _project_prompt_context(project_context)
     project_candidates = extract_project_candidates(request.message, project_context)
     plan_candidate = build_plan_candidate(request.message, project_context)
@@ -1184,6 +1185,25 @@ def _project_context_for_response(user_id: str, conversation_id: str | None, mes
         "resolver": resolver,
         "context": context,
     }
+
+
+def _project_progress_feedback(project_context: dict[str, object]) -> tuple[str, str]:
+    resolver = project_context.get("resolver")
+    if not isinstance(resolver, dict):
+        return "skipped", "本轮未取得项目识别结果"
+    reason = str(resolver.get("reason") or "")
+    if reason.startswith(("project_store_unavailable:", "explicit_project_unavailable:")):
+        return "failed", "项目资料暂时不可用，继续使用本轮对话上下文"
+    if resolver.get("requiresClarification"):
+        return "completed", "项目归属仍需确认，暂未采用项目上下文"
+    if not resolver.get("projectId"):
+        return "completed", "未匹配到项目，继续使用本轮对话上下文"
+    context = project_context.get("context")
+    if isinstance(context, dict) and context.get("error"):
+        return "failed", "已识别关联项目，项目上下文暂时不可用"
+    if not isinstance(context, dict) or not context:
+        return "completed", "已识别关联项目，未返回项目上下文"
+    return "completed", "已识别关联项目并取得项目上下文"
 
 
 def _project_prompt_context(project_context: dict[str, object] | None) -> str:

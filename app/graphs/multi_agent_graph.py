@@ -22,6 +22,80 @@ from app.rag.query_context import query_context_scope
 
 logger = logging.getLogger(__name__)
 
+_RUNNING_FEEDBACK = {
+    "supervisor_agent": "正在识别请求类型并选择处理步骤",
+    "memory_agent": "正在查找与本轮对话相关的历史上下文",
+    "rag_agent": "正在查找知识库中的相关资料",
+    "tool_agent": "正在选择工具并等待调用结果",
+    "gather_agent": "正在汇总各步骤返回的上下文",
+    "writer_agent": "正在整理上下文并生成回答",
+    "reviewer_agent": "正在检查回答内容",
+}
+_SKIPPED_FEEDBACK = {
+    "memory_agent": "本轮未执行记忆召回",
+    "rag_agent": "本轮未执行知识库检索",
+    "tool_agent": "本轮未调用工具",
+}
+
+
+def _tool_feedback_counts(results: list[dict[str, object]]) -> tuple[int, int]:
+    failed = pending = 0
+    for result in results:
+        if not isinstance(result, dict) or result.get("needsClarification"):
+            continue
+        operation = result.get("operation") if isinstance(result.get("operation"), dict) else {}
+        if result.get("ok") is False or result.get("policyBlocked") or operation.get("status") == "failed":
+            failed += 1
+        elif result.get("ok") and result.get("requiresConfirmation") and operation.get("status") == "pending":
+            # requiresConfirmation also marks failed write requests. Only an
+            # actual pending operation can offer confirmation to the user.
+            pending += 1
+    return failed, pending
+
+
+def _step_outcome(agent: str, trace: dict[str, object]) -> tuple[str, str]:
+    # Reviewer skipped means the optional model review was disabled; local
+    # content rules still ran. Do not describe that real check as unexecuted.
+    if agent == "reviewer_agent":
+        if trace.get("approved") is False:
+            return "failed", "回答内容检查未通过"
+        if trace.get("skipped"):
+            return "completed", "已完成回答内容的规则检查"
+        return "completed", "回答内容检查已结束"
+    if trace.get("skipped"):
+        return "skipped", _SKIPPED_FEEDBACK.get(agent, "本轮未执行此步骤")
+    if agent == "supervisor_agent":
+        return "completed", "已确定本轮需要执行的处理步骤"
+    if agent == "memory_agent":
+        return "completed", (
+            "已整理历史上下文供本轮参考" if trace.get("memoryContextChars")
+            else "未召回可用的历史上下文"
+        )
+    if agent == "rag_agent":
+        queries = int(trace.get("queryCount") or 0)
+        contexts = int(trace.get("contextCount") or 0)
+        if not contexts:
+            return "completed", (
+                f"已检索 {queries} 次，未命中相关资料片段" if queries
+                else "本次未返回相关资料片段"
+            )
+        return "completed", f"已检索 {queries} 次，取得 {contexts} 个相关资料片段"
+    if agent == "tool_agent":
+        count = int(trace.get("toolCount") or 0)
+        if not count:
+            return "completed", "本次未返回工具结果"
+        details = []
+        if trace.get("failedToolCount"):
+            details.append(f"{int(trace['failedToolCount'])} 个失败")
+        if trace.get("pendingToolCount"):
+            details.append(f"{int(trace['pendingToolCount'])} 个待确认")
+        return "completed", f"已返回 {count} 个工具结果" + (f"，其中 {'、'.join(details)}" if details else "")
+    if agent == "gather_agent":
+        return "completed", "已汇总各步骤返回的上下文"
+    if agent == "writer_agent":
+        return "completed", "回答生成完成" if trace.get("answerChars") else "本轮未生成回答内容"
+    return "completed", "此步骤已结束"
+
 
 def _progress_node(agent: str):
     """Observe real node boundaries, without publishing input/output contents."""
@@ -29,7 +103,7 @@ def _progress_node(agent: str):
         @wraps(function)
         def observed(state):
             started = perf_counter()
-            emit_step(agent, "running")
+            emit_step(agent, "running", summary=_RUNNING_FEEDBACK.get(agent))
             try:
                 result = function(state)
             except Exception:
@@ -40,14 +114,9 @@ def _progress_node(agent: str):
                 *(item.get("trace") or {} for item in result.get("agent_outputs") or []),
             ]
             trace = next((item for item in reversed(traces) if item.get("agent") == agent), {})
-            skipped = bool(trace.get("skipped"))
-            summary = "本轮未执行此步骤" if skipped else "步骤已完成"
-            if agent == "rag_agent" and not skipped:
-                summary = f"检索 {int(trace.get('queryCount') or 0)} 次，命中 {int(trace.get('contextCount') or 0)} 个片段"
-            elif agent == "tool_agent" and not skipped:
-                summary = f"工具结果 {int(trace.get('toolCount') or 0)} 个"
+            status, summary = _step_outcome(agent, trace)
             emit_step(
-                agent, "skipped" if skipped else "completed",
+                agent, status,
                 duration_ms=_elapsed_ms(started), summary=summary,
                 timings=trace.get("timings"),
             )
@@ -263,6 +332,7 @@ def tool_agent_node(state: MultiAgentState) -> MultiAgentState:
         knowledge_base_ids=state["knowledge_base_ids"],
     )
     tool_results = result.get("tool_results") or []
+    failed_tool_count, pending_tool_count = _tool_feedback_counts(tool_results)
     decision = result.get("decision") or {}
     logger.info(
         "context_graph timing tool_done. user_id=%s conversation_id=%s elapsed=%.3fs skipped=%s selected_tools=%s",
@@ -281,6 +351,8 @@ def tool_agent_node(state: MultiAgentState) -> MultiAgentState:
                 "agent": "tool_agent",
                 "selectedTools": result.get("selected_tools") or [],
                 "toolCount": len(tool_results),
+                "failedToolCount": failed_tool_count,
+                "pendingToolCount": pending_tool_count,
                 "skipped": result.get("skipped", False),
                 "decision": decision,
                 "elapsedMs": _elapsed_ms(started),
@@ -302,7 +374,7 @@ def route_after_supervisor(state: MultiAgentState) -> list[Send]:
     active = {item.node for item in dispatched}
     for agent in ("memory_agent", "rag_agent", "tool_agent"):
         if agent not in active:
-            emit_step(agent, "skipped", duration_ms=0, summary="本轮无需执行此步骤")
+            emit_step(agent, "skipped", duration_ms=0, summary=_SKIPPED_FEEDBACK[agent])
     return dispatched
 
 
