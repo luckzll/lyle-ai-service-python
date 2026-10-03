@@ -56,6 +56,18 @@ def xls():
     return output.getvalue()
 
 
+def xlsm():
+    output = BytesIO()
+    with ZipFile(BytesIO(xlsx())) as source, ZipFile(output, "w", ZIP_DEFLATED) as target:
+        for entry in source.infolist():
+            data = source.read(entry)
+            if entry.filename == "[Content_Types].xml":
+                data = data.replace(b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
+                                    b"application/vnd.ms-excel.sheet.macroEnabled.main+xml")
+            target.writestr(entry.filename, data)
+    return output.getvalue()
+
+
 def pptx(texts=("Presentation first page", "Presentation second page")):
     # A real OOXML package with content types, package relationships, presentation
     # and slide relationships; no optional python-pptx dependency is required.
@@ -98,7 +110,7 @@ def pdf(text="PDF document text", pages=1, encrypted=False):
 
 @pytest.mark.parametrize("format,builder,expected", [
     ("docx", docx, "Project scope"), ("xlsx", xlsx, "文档支持 | 完成"),
-    ("xlsm", xlsx, "文档支持 | 完成"), ("xls", xls, "旧版工作簿 | 可以读取"),
+    ("xlsm", xlsm, "文档支持 | 完成"), ("xls", xls, "旧版工作簿 | 可以读取"),
     ("pptx", pptx, "Presentation second page"), ("pdf", pdf, "PDF document text"),
 ])
 def test_actual_document_bytes_are_extracted_via_http(client, format, builder, expected):
@@ -213,6 +225,16 @@ def test_character_output_is_capped_and_marked_truncated(client, monkeypatch):
     result = post(client, docx("A meaningful paragraph with more than thirty-two characters")).json()
     assert len(result["text"]) == 32
     assert result["truncated"] and result["warnings"]
+
+
+def test_docx_tables_keep_their_place_between_surrounding_paragraphs(client):
+    document = Document()
+    document.add_paragraph("Before the table")
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "Table content"
+    document.add_paragraph("After the table")
+    output = BytesIO(); document.save(output)
+    result = post(client, output.getvalue()).json()
+    assert result["text"].index("Before") < result["text"].index("Table content") < result["text"].index("After")
 
 
 def test_pdf_pages_and_spreadsheet_rows_are_bounded(client, monkeypatch):

@@ -539,26 +539,30 @@ def _local_pdf(data: bytes, output: _LocalText) -> None:
 
 
 def _local_docx(data: bytes, output: _LocalText) -> None:
+    from docx.text.paragraph import Paragraph
     document = Document(BytesIO(data))
     blocks = 0
-    for paragraph in document.paragraphs:
-        blocks += 1
-        if blocks > LOCAL_DOCUMENT_MAX_BLOCKS:
-            output.truncated = True
-            return
-        if not output.add(paragraph.text):
-            return
-    for table in document.tables:
-        for row in table.rows:
+    # Keep tables beside their surrounding paragraphs instead of collecting all
+    # tables at the end, which can change the meaning of a document.
+    for item in document.iter_inner_content():
+        if isinstance(item, Paragraph):
             blocks += 1
             if blocks > LOCAL_DOCUMENT_MAX_BLOCKS:
                 output.truncated = True
                 return
-            if len(row.cells) > LOCAL_DOCUMENT_MAX_COLUMNS:
-                output.truncated = True
-            cells = [cell.text.strip() for cell in row.cells[:LOCAL_DOCUMENT_MAX_COLUMNS] if cell.text.strip()]
-            if cells and not output.add(" | ".join(cells)):
+            if not output.add(item.text):
                 return
+        else:
+            for row in item.rows:
+                blocks += 1
+                if blocks > LOCAL_DOCUMENT_MAX_BLOCKS:
+                    output.truncated = True
+                    return
+                if len(row.cells) > LOCAL_DOCUMENT_MAX_COLUMNS:
+                    output.truncated = True
+                cells = [cell.text.strip() for cell in row.cells[:LOCAL_DOCUMENT_MAX_COLUMNS] if cell.text.strip()]
+                if cells and not output.add(" | ".join(cells)):
+                    return
 
 
 def _local_spreadsheet(data: bytes, format: str, output: _LocalText) -> None:
