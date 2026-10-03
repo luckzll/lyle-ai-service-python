@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from urllib.parse import urlparse
@@ -380,3 +381,285 @@ def _read_image_ocr(path: Path) -> str:
     except Exception as exc:
         return f"图片 OCR 解析失败：{exc}"
     return text.strip() or "图片 OCR 未识别到文本。"
+
+
+# Separate from storage-backed RAG ingestion: caller-supplied bytes never acquire
+# a storage reference and cannot create attachments, embeddings or memory.
+LOCAL_DOCUMENT_MAX_TEXT = 120_000
+LOCAL_DOCUMENT_MAX_ZIP_BYTES = 20 * 1024 * 1024
+LOCAL_DOCUMENT_MAX_ZIP_ENTRY = 8 * 1024 * 1024
+LOCAL_DOCUMENT_MAX_ZIP_ENTRIES = 2_048
+LOCAL_DOCUMENT_MAX_PAGES = 100
+LOCAL_DOCUMENT_MAX_SHEETS = 20
+LOCAL_DOCUMENT_MAX_ROWS = 5_000
+LOCAL_DOCUMENT_MAX_COLUMNS = 200
+LOCAL_DOCUMENT_MAX_BLOCKS = 5_000
+
+
+class _LocalText:
+    def __init__(self):
+        self.parts: list[str] = []
+        self.length = 0
+        self.truncated = False
+        self.warnings: list[str] = []
+
+    def add(self, text: str) -> bool:
+        text = text.strip()
+        if not text:
+            return True
+        available = LOCAL_DOCUMENT_MAX_TEXT - self.length
+        separator = "\n" if self.parts else ""
+        value = separator + text
+        if len(value) > available:
+            self.parts.append(value[:available])
+            self.length += available
+            self.truncated = True
+            return False
+        self.parts.append(value)
+        self.length += len(value)
+        return True
+
+    def result(self, format: str) -> dict:
+        text = "".join(self.parts)
+        warnings = list(self.warnings)
+        if self.truncated:
+            warnings.append("文档内容较多，已返回有界的部分文字。")
+        if not text:
+            warnings.append("未解析到可用文字；扫描版 PDF 需要先识别文字或转换为含文字的文件。"
+                            if format == "pdf" else "未解析到可用文字，文件可能为空或只包含图片。")
+        return {"text": text, "format": format, "truncated": self.truncated, "warnings": warnings}
+
+
+def _local_zip(data: bytes, format: str) -> ZipFile:
+    archive = ZipFile(BytesIO(data))
+    try:
+        entries = archive.infolist()
+        if len(entries) > LOCAL_DOCUMENT_MAX_ZIP_ENTRIES:
+            raise DocumentReadError("FILE_TOO_LARGE", "文档包含过多内容，无法安全解析。")
+        total = 0
+        names: set[str] = set()
+        for entry in entries:
+            name = entry.filename
+            if (name in names or name.startswith(("/", "\\")) or "\\" in name or ".." in name.split("/")
+                    or entry.flag_bits & 1):
+                raise DocumentReadError("INVALID_DOCUMENT", "文档结构无效或已加密，请重新导出文件。")
+            names.add(name)
+            total += entry.file_size
+            if (entry.file_size > LOCAL_DOCUMENT_MAX_ZIP_ENTRY or total > LOCAL_DOCUMENT_MAX_ZIP_BYTES
+                    or entry.file_size > max(1_000_000, entry.compress_size * 200)):
+                raise DocumentReadError("FILE_TOO_LARGE", "文档展开后过大，无法安全解析。")
+            if name.endswith(".xml") or name.endswith(".rels"):
+                # No external entities/DTDs are accepted, including unused OOXML parts.
+                with archive.open(entry) as source:
+                    content = source.read(LOCAL_DOCUMENT_MAX_ZIP_ENTRY + 1)
+                if len(content) > LOCAL_DOCUMENT_MAX_ZIP_ENTRY:
+                    raise DocumentReadError("FILE_TOO_LARGE", "文档展开后过大，无法安全解析。")
+                # XML declarations may use UTF-16/32; remove their NUL padding
+                # when detecting forbidden DTD/entity declarations.
+                upper = content.replace(b"\x00", b"").upper()
+                if b"<!DOCTYPE" in upper or b"<!ENTITY" in upper:
+                    raise DocumentReadError("INVALID_DOCUMENT", "文档包含不支持的 XML 结构，请重新导出文件。")
+        required = {"docx": "word/document.xml", "xlsx": "xl/workbook.xml", "xlsm": "xl/workbook.xml",
+                    "pptx": "ppt/presentation.xml"}[format]
+        if "[Content_Types].xml" not in names or required not in names:
+            raise DocumentReadError("INVALID_DOCUMENT", "文件内容与文档格式不一致，请重新导出文件。")
+        return archive
+    except Exception:
+        archive.close()
+        raise
+
+
+def _local_pdf(data: bytes, output: _LocalText) -> None:
+    from pypdf.generic import ArrayObject
+    if not data.startswith(b"%PDF-"):
+        raise DocumentReadError("INVALID_DOCUMENT", "文件不是有效的 PDF 文档。")
+    reader = PdfReader(BytesIO(data))
+    if reader.is_encrypted:
+        raise DocumentReadError("INVALID_DOCUMENT", "PDF 已加密，请先解密后再读取。")
+    count = len(reader.pages)
+    output.truncated = count > LOCAL_DOCUMENT_MAX_PAGES
+    expanded = 0
+    seen_streams: set[int] = set()
+
+    def check_stream(stream):
+        nonlocal expanded
+        stream = stream.get_object()
+        if id(stream) in seen_streams:
+            return
+        seen_streams.add(id(stream))
+        if len(seen_streams) > 256:
+            raise DocumentReadError("FILE_TOO_LARGE", "PDF 文字结构过多，无法安全解析。")
+        size = len(stream.get_data())
+        expanded += size
+        if size > LOCAL_DOCUMENT_MAX_ZIP_ENTRY or expanded > LOCAL_DOCUMENT_MAX_ZIP_BYTES:
+            raise DocumentReadError("FILE_TOO_LARGE", "PDF 文字内容过大，无法安全解析。")
+
+    def check_resources(resources, depth=0):
+        if not resources:
+            return
+        if depth > 8:
+            raise DocumentReadError("FILE_TOO_LARGE", "PDF 文字结构过多，无法安全解析。")
+        resources = resources.get_object()
+        objects = resources.get("/XObject")
+        if objects:
+            objects = objects.get_object()
+            if len(objects) > 64:
+                raise DocumentReadError("FILE_TOO_LARGE", "PDF 文字结构过多，无法安全解析。")
+            for reference in objects.values():
+                obj = reference.get_object()
+                if obj.get("/Subtype") == "/Form" and id(obj) not in seen_streams:
+                    check_stream(obj)
+                    check_resources(obj.get("/Resources"), depth + 1)
+        fonts = resources.get("/Font")
+        if fonts:
+            fonts = fonts.get_object()
+            if len(fonts) > 64:
+                raise DocumentReadError("FILE_TOO_LARGE", "PDF 字体结构过多，无法安全解析。")
+            for reference in fonts.values():
+                mapping = reference.get_object().get("/ToUnicode")
+                if mapping:
+                    check_stream(mapping)
+
+    for index in range(min(count, LOCAL_DOCUMENT_MAX_PAGES)):
+        page = reader.pages[index]
+        # pypdf also enforces stream decompression limits. Bound text content per
+        # page and across this extraction before building the text representation.
+        content = page.get("/Contents")
+        if content is not None:
+            content = content.get_object()
+            streams = content if isinstance(content, ArrayObject) else [content]
+            if len(streams) > 64:
+                raise DocumentReadError("FILE_TOO_LARGE", "PDF 文字结构过多，无法安全解析。")
+            for stream in streams:
+                check_stream(stream)
+        check_resources(page.get("/Resources"))
+        text = page.extract_text() or ""
+        if text.strip() and not output.add(f"第 {index + 1} 页\n{text}"):
+            break
+
+
+def _local_docx(data: bytes, output: _LocalText) -> None:
+    document = Document(BytesIO(data))
+    blocks = 0
+    for paragraph in document.paragraphs:
+        blocks += 1
+        if blocks > LOCAL_DOCUMENT_MAX_BLOCKS:
+            output.truncated = True
+            return
+        if not output.add(paragraph.text):
+            return
+    for table in document.tables:
+        for row in table.rows:
+            blocks += 1
+            if blocks > LOCAL_DOCUMENT_MAX_BLOCKS:
+                output.truncated = True
+                return
+            if len(row.cells) > LOCAL_DOCUMENT_MAX_COLUMNS:
+                output.truncated = True
+            cells = [cell.text.strip() for cell in row.cells[:LOCAL_DOCUMENT_MAX_COLUMNS] if cell.text.strip()]
+            if cells and not output.add(" | ".join(cells)):
+                return
+
+
+def _local_spreadsheet(data: bytes, format: str, output: _LocalText) -> None:
+    if format == "xls":
+        import xlrd
+        output.warnings.append("XLS 仅读取文件保存的单元格值，不执行宏或重新计算公式。")
+        if not data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+            raise DocumentReadError("INVALID_DOCUMENT", "文件不是有效的 XLS 工作簿。")
+        workbook = xlrd.open_workbook(file_contents=data, on_demand=True)
+        try:
+            output.truncated = workbook.nsheets > LOCAL_DOCUMENT_MAX_SHEETS
+            remaining_rows = LOCAL_DOCUMENT_MAX_ROWS
+            for index in range(min(workbook.nsheets, LOCAL_DOCUMENT_MAX_SHEETS)):
+                sheet = workbook.sheet_by_index(index)
+                rows = min(sheet.nrows, remaining_rows)
+                output.truncated |= sheet.nrows > rows or sheet.ncols > LOCAL_DOCUMENT_MAX_COLUMNS
+                heading = f"工作表：{sheet.name}\n"
+                for row_index in range(rows):
+                    values = [str(sheet.cell_value(row_index, col)).strip() for col in range(min(sheet.ncols, LOCAL_DOCUMENT_MAX_COLUMNS))]
+                    values = [value for value in values if value]
+                    if values:
+                        if not output.add(heading + " | ".join(values)):
+                            return
+                        heading = ""
+                remaining_rows -= rows
+                workbook.unload_sheet(index)
+                if remaining_rows <= 0:
+                    output.truncated |= index + 1 < workbook.nsheets
+                    break
+        finally:
+            workbook.release_resources()
+    else:
+        # Preserve formula expressions when cached results are absent. Never
+        # execute formulas/macros or resolve external workbook links.
+        output.warnings.append("仅读取单元格内容和公式表达式，不执行宏或计算公式。")
+        workbook = load_workbook(BytesIO(data), read_only=True, data_only=False, keep_links=False)
+        try:
+            output.truncated = len(workbook.worksheets) > LOCAL_DOCUMENT_MAX_SHEETS
+            remaining_rows = LOCAL_DOCUMENT_MAX_ROWS
+            for index, sheet in enumerate(workbook.worksheets[:LOCAL_DOCUMENT_MAX_SHEETS]):
+                rows = min(sheet.max_row if sheet.max_row is not None else remaining_rows, remaining_rows)
+                columns = min(sheet.max_column if sheet.max_column is not None else LOCAL_DOCUMENT_MAX_COLUMNS, LOCAL_DOCUMENT_MAX_COLUMNS)
+                output.truncated |= sheet.max_row is None or sheet.max_column is None
+                output.truncated |= (sheet.max_row or 0) > rows or (sheet.max_column or 0) > columns
+                heading = f"工作表：{sheet.title}\n"
+                if rows and columns:
+                    for row in sheet.iter_rows(min_row=1, max_row=rows, min_col=1, max_col=columns, values_only=True):
+                        values = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
+                        if values:
+                            if not output.add(heading + " | ".join(values)):
+                                return
+                            heading = ""
+                remaining_rows -= rows
+                if remaining_rows <= 0:
+                    output.truncated |= index + 1 < len(workbook.worksheets)
+                    break
+        finally:
+            workbook.close()
+
+
+def load_local_document_text(data: bytes, format: str) -> dict:
+    """Bounded, memory-only document extraction; does not resolve storage or ingest."""
+    if len(data) > 5 * 1024 * 1024:
+        raise DocumentReadError("FILE_TOO_LARGE", "单个文档不能超过 5 MB。")
+    output = _LocalText()
+    if format in {"docx", "xlsx", "xlsm", "pptx"}:
+        with _local_zip(data, format) as archive:
+            if any(entry.file_size and ("/media/" in entry.filename or "/charts/" in entry.filename)
+                   for entry in archive.infolist()):
+                output.warnings.append("仅提取文档文字和单元格，未识别内嵌图片或图表内容。")
+            if format == "pptx":
+                # Follow the presentation order, which can differ from slide filenames.
+                rel_namespace = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                slide_namespace = "http://schemas.openxmlformats.org/presentationml/2006/main"
+                presentation = ElementTree.fromstring(archive.read("ppt/presentation.xml"))
+                relationships = ElementTree.fromstring(archive.read("ppt/_rels/presentation.xml.rels"))
+                references = {node.get("Id"): node for node in relationships}
+                slides = []
+                for node in presentation.iter(f"{{{slide_namespace}}}sldId"):
+                    reference = references.get(node.get(f"{{{rel_namespace}}}id"))
+                    if reference is None or reference.get("TargetMode") == "External" or not (reference.get("Type") or "").endswith("/slide"):
+                        raise DocumentReadError("INVALID_DOCUMENT", "PPTX 页面结构无效，请重新导出文件。")
+                    target = reference.get("Target") or ""
+                    path = target[1:] if target.startswith("/ppt/") else "ppt/" + target
+                    if not path.startswith("ppt/slides/") or ".." in path.split("/") or "\\" in path:
+                        raise DocumentReadError("INVALID_DOCUMENT", "PPTX 页面结构无效，请重新导出文件。")
+                    slides.append(archive.getinfo(path))
+                output.truncated = len(slides) > LOCAL_DOCUMENT_MAX_PAGES
+                for index, entry in enumerate(slides[:LOCAL_DOCUMENT_MAX_PAGES], 1):
+                    root = ElementTree.fromstring(archive.read(entry))
+                    items = [node.text.strip() for node in root.iter() if node.tag.endswith("}t") and node.text and node.text.strip()]
+                    if items and not output.add(f"第 {index} 页\n" + "\n".join(items)):
+                        break
+            elif format == "docx":
+                _local_docx(data, output)
+            else:
+                _local_spreadsheet(data, format, output)
+    elif format == "pdf":
+        _local_pdf(data, output)
+    elif format == "xls":
+        _local_spreadsheet(data, format, output)
+    else:
+        raise DocumentReadError("UNSUPPORTED_FORMAT", "不支持该文档格式；DOC 和 PPT 请转换为 DOCX 和 PPTX。")
+    return output.result(format)
