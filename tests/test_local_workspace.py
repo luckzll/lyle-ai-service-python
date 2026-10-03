@@ -1,6 +1,7 @@
 import base64
 from io import BytesIO
 import json
+import random
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from pydantic import ValidationError
@@ -13,9 +14,9 @@ def request(messages=None, **options):
     return module.WorkspaceStep(user_id='42', turn_id='local-test', messages=messages or [{'role': 'user', 'content': 'inspect'}], **options)
 
 
-def image_url(format='PNG', size=(2, 2)):
+def image_url(format='PNG', size=(2, 2), color='red'):
     output = BytesIO()
-    Image.new('RGB', size, color='red').save(output, format=format)
+    Image.new('RGB', size, color=color).save(output, format=format)
     mime = {'PNG': 'png', 'JPEG': 'jpeg', 'WEBP': 'webp'}[format]
     return f'data:image/{mime};base64,' + base64.b64encode(output.getvalue()).decode('ascii')
 
@@ -222,6 +223,97 @@ def test_workspace_read_image_results_are_followed_by_real_user_image_content_fo
     # A synthetic picture message cannot bypass unresolved tool-result ordering.
     with pytest.raises(ValidationError):
         request([*history[:3], history[-1]])
+
+
+@pytest.mark.parametrize('retain_earlier_pixels', [True, False])
+def test_multiple_real_image_batches_reach_model_in_valid_tool_order_and_keep_analysis(monkeypatch, retain_earlier_pixels):
+    pictures = [image_url(color=color) for color in ['red', 'green', 'blue', 'yellow']]
+    first_calls = [{'id': f'image-{index}', 'name': 'workspace_read', 'args': {'path': f'images/{index}.png'}} for index in [1, 2]]
+    history = [
+        {'role': 'user', 'content': '请读取并说明 images/1.png 到 images/4.png 这四张图片'},
+        {'role': 'assistant', 'content': '先读取前两张图片。', 'tool_calls': first_calls},
+        *[{'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps({'kind': 'image', 'path': call['args']['path'], 'status': 'read'})} for call in first_calls],
+        {'role': 'user', 'content': '本批 images/1.png、images/2.png 的真实图片，请先概述再继续原任务。', 'images': pictures[:2]},
+    ]
+    seen = []
+
+    class Model:
+        def bind_tools(self, tools, **kwargs):
+            assert {tool['function']['name'] for tool in tools} == module.READ_NAMES
+            read = next(tool['function']['description'] for tool in tools if tool['function']['name'] == 'workspace_read')
+            assert '每批工具调用最多读取 2 张图片' in read
+            return self
+
+        def stream(self, messages, config):
+            seen.append(messages)
+            assert '先按路径简述可见内容' in messages[0].content
+            assert '再自动继续读取原用户任务需要的其余图片' in messages[0].content
+            assert '读取失败应单独说明' in messages[0].content
+            if len(seen) == 1:
+                yield AIMessageChunk(content='images/1.png 是红色，images/2.png 是绿色。继续读取剩余两张。')
+                for index in [3, 4]:
+                    yield AIMessageChunk(content='', tool_call_chunks=[{'id': f'image-{index}', 'name': 'workspace_read', 'args': json.dumps({'path': f'images/{index}.png'}), 'index': index - 3}])
+            else:
+                yield AIMessageChunk(content='images/3.png 是蓝色，images/4.png 是黄色；四张图分批读取和识别完成。')
+
+    monkeypatch.setattr(module, 'build_chat_model_for_task', lambda *a, **k: Model())
+
+    def result(output):
+        return next(json.loads(block.split('\ndata: ', 1)[1]) for block in output.split('\n\n') if block.startswith('event: result\n'))
+
+    first = result(''.join(module.frames(request(history, mode='chat'))))
+    assert [call['id'] for call in first['tool_calls']] == ['image-3', 'image-4']
+    if not retain_earlier_pixels:
+        history[-1] = {**history[-1], 'images': [], 'content': history[-1]['content'] + ' 较早图片已移除，请保留已返回的识别概述。'}
+    history.extend([
+        first,
+        *[{'role': 'tool', 'tool_call_id': call['id'], 'content': json.dumps({'kind': 'image', 'path': call['args']['path'], 'status': 'read'})} for call in first['tool_calls']],
+        {'role': 'user', 'content': '本批 images/3.png、images/4.png 的真实图片。请综合已返回的前批概述完成原任务。', 'images': pictures[2:]},
+    ])
+    final = result(''.join(module.frames(request(history, mode='chat'))))
+    assert final['tool_calls'] == []
+    assert len(seen) == 2
+    assert isinstance(seen[0][-1], HumanMessage)
+    assert [part['image_url']['url'] for part in seen[0][-1].content if part['type'] == 'image_url'] == pictures[:2]
+    assert isinstance(seen[1][-1], HumanMessage)
+    assert [part['image_url']['url'] for part in seen[1][-1].content if part['type'] == 'image_url'] == pictures[2:]
+    assert all(isinstance(message, ToolMessage) for message in seen[1][-3:-1])
+    assert any(message.type == 'ai' and first['content'] == message.content for message in seen[1])
+    if retain_earlier_pixels:
+        assert [part['image_url']['url'] for part in seen[1][5].content if part['type'] == 'image_url'] == pictures[:2]
+    else:
+        assert isinstance(seen[1][5].content, str)
+
+
+def test_model_image_read_plan_is_returned_unchanged_for_client_batch_scheduler(monkeypatch):
+    class Model:
+        def bind_tools(self, *args, **kwargs):
+            return self
+
+        def stream(self, messages, config):
+            for index in range(4):
+                yield AIMessageChunk(content='', tool_call_chunks=[{'id': f'image-{index}', 'name': 'workspace_read', 'args': json.dumps({'path': f'images/{index}.png'}), 'index': index}])
+
+    monkeypatch.setattr(module, 'build_chat_model_for_task', lambda *a, **k: Model())
+    output = ''.join(module.frames(request()))
+    result = next(json.loads(block.split('\ndata: ', 1)[1]) for block in output.split('\n\n') if block.startswith('event: result\n'))
+    assert [call['id'] for call in result['tool_calls']] == [f'image-{index}' for index in range(4)]
+    assert [call['args']['path'] for call in result['tool_calls']] == [f'images/{index}.png' for index in range(4)]
+
+
+def test_multiple_image_messages_cannot_bypass_total_request_byte_budget():
+    output = BytesIO()
+    Image.frombytes('RGB', (127, 127), random.Random(42).randbytes(127 * 127 * 3)).save(output, format='PNG')
+    picture = 'data:image/png;base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+    assert len(picture) <= module.MAX_IMAGE_DATA_URL_CHARS
+    module.Message(role='user', content='one valid batch', images=[picture, picture])
+    history = [
+        {'role': 'user', 'content': 'first batch', 'images': [picture, picture]},
+        {'role': 'assistant', 'content': '前批分析已返回。'},
+        {'role': 'user', 'content': 'second batch', 'images': [picture, picture]},
+    ]
+    with pytest.raises(ValidationError, match='工作区上下文已满|文字和图片上下文合计过大'):
+        request(history)
 
 
 def test_exception_never_echoes_source_or_upstream_error(monkeypatch, caplog):
