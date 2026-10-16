@@ -1,5 +1,6 @@
 from collections import Counter
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
@@ -55,8 +56,15 @@ def test_explicit_personal_interests_are_not_mistaken_for_general_explanations(q
     assert run_supervisor_agent(question, [])['use_memory']
 
 
+@pytest.mark.parametrize('question', ['根据我的身份推荐副业', '按我的角色推荐学习方向',
+                                      '结合我的技能推荐兼职', '根据我的工作经验推荐发展方向'])
+def test_personal_identity_and_work_context_request_memory(question):
+    assert run_supervisor_agent(question, [])['use_memory']
+
+
 @pytest.mark.parametrize('question', ['介绍一下兴趣推荐算法', '翻译成英文：我的兴趣爱好是读书',
-                                      '改写：我有哪些兴趣，我最喜欢什么'])
+                                      '改写：我有哪些兴趣，我最喜欢什么',
+                                      '翻译成英文：根据我的身份推荐副业', '解释一下角色和身份的区别'])
 def test_general_interest_topics_and_quoted_transformations_do_not_recall(question):
     assert not run_supervisor_agent(question, [])['use_memory']
 
@@ -66,6 +74,7 @@ def test_general_interest_topics_and_quoted_transformations_do_not_recall(questi
     ('根据知识库说明退费条件', False, True, False),
     ('联网搜索最新的 LangGraph 发布说明', False, False, True),
     ('根据知识库和我的偏好，联网搜索相关方案', True, True, True),
+    ('更具我的身份目前有什么副业适合我来做吗？联网搜索一下', True, False, True),
     ('创建待办：整理测试记录', False, False, True),
     ('创建待办：整理知识库和我的偏好', False, False, True),
 ])
@@ -109,6 +118,7 @@ def test_real_attachments_override_short_text_heuristics(monkeypatch, kind):
     ('根据知识库说明规则', Counter(rag_agent=1)),
     ('联网搜索最新消息', Counter(tool_agent=1)),
     ('根据知识库和我的偏好，联网搜索方案', Counter(memory_agent=1, rag_agent=1, tool_agent=1)),
+    ('更具我的身份目前有什么副业适合我来做吗？联网搜索一下', Counter(memory_agent=1, tool_agent=1)),
 ])
 def test_compiled_graph_only_runs_planned_workers_once_and_preserves_session(monkeypatch, question, expected):
     monkeypatch.setattr(settings, 'tool_agent_enabled', True)
@@ -149,6 +159,52 @@ def test_compiled_graph_only_runs_planned_workers_once_and_preserves_session(mon
     assert len([item for item in result['agent_trace'] if item['agent'] == 'gather_agent']) == 1
     for worker in ('memory_agent', 'rag_agent', 'tool_agent'):
         assert sum(event['step'] == worker and event['status'] == 'running' for event in events) == expected[worker]
+
+
+@pytest.mark.parametrize('memory_mode', ['legacy_profiles', 'published_schema', 'layered_facts'])
+def test_identity_based_web_request_delivers_saved_role_to_writer(monkeypatch, memory_mode):
+    from app.memory import schema_builder, store
+
+    for flag in ('postgres_enabled', 'redis_enabled', 'qdrant_enabled', 'milvus_enabled',
+                 'rerank_enabled', 'memory_schema_build_with_llm', 'recall_planner_llm_enabled'):
+        monkeypatch.setattr(settings, flag, False)
+    monkeypatch.setattr(settings, 'memory_facts_enabled', memory_mode == 'layered_facts')
+    monkeypatch.setattr(settings, 'memory_schema_enabled', memory_mode != 'legacy_profiles')
+    monkeypatch.setattr(settings, 'memory_schema_small_max_chars', 1)
+    monkeypatch.setattr(settings, 'tool_agent_enabled', True)
+    monkeypatch.setattr(settings, 'tool_router_llm_enabled', True)
+    user_id = 'identity-web-' + uuid4().hex
+    store.upsert_structured_memory(user_id, 'career', '程序员', confidence=.95)
+    store.upsert_structured_memory(user_id + '-other', 'career', '医生', confidence=.95)
+    if memory_mode == 'published_schema':
+        assert schema_builder.build_user_schema(user_id)['status'] == 'ready'
+
+    monkeypatch.setattr(graph, 'run_tool_agent', lambda *args, **kwargs: {
+        'tool_results': [{'tool': 'web_search', 'ok': True}], 'tool_context': '网页搜索结果',
+    })
+    monkeypatch.setattr(graph, 'run_rag_agent', lambda *args, **kwargs: pytest.fail('unrelated knowledge retrieval'))
+    writer_inputs = []
+    def writer(question, contexts, memory_context, tool_context, *args):
+        writer_inputs.append((memory_context, tool_context))
+        return '可以结合你的程序员背景评估副业。'
+    monkeypatch.setattr(graph, 'run_writer_agent', writer)
+    monkeypatch.setattr(graph, 'run_reviewer_agent', lambda *args, **kwargs: {
+        'approved': True, 'skipped': True, 'modelReviewUsed': False,
+    })
+
+    result = graph.run_multi_agent_graph(
+        user_id, 'new-conversation', '更具我的身份目前有什么副业适合我来做吗？联网搜索一下', ['authorized-kb'],
+    )
+
+    assert len(writer_inputs) == 1
+    memory_context, tool_context = writer_inputs[0]
+    assert '当前角色：程序员' in memory_context
+    assert '医生' not in memory_context
+    assert tool_context == '网页搜索结果'
+    assert any(item['title'] == '当前角色' and item['valueSummary'] == '程序员'
+               for item in result['memory']['used_memories'])
+    workers = [item['agent'] for item in result['agent_trace']]
+    assert workers.count('memory_agent') == workers.count('tool_agent') == 1
 
 
 def test_direct_generation_still_runs_content_rules_with_governance(monkeypatch):
