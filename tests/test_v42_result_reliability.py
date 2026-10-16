@@ -29,6 +29,11 @@ class _RowsConnection:
         self.queries.append((query, params))
         if "FROM workflow_run run" in query:
             return _RowsCursor([])
+        if "GROUP BY result.status" in query:
+            counts = {}
+            for row in self.rows:
+                counts[row[5]] = counts.get(row[5], 0) + 1
+            return _RowsCursor(list(counts.items()))
         return _RowsCursor(self.rows)
 
     def commit(self):
@@ -247,7 +252,7 @@ def test_result_list_batches_automation_association_without_per_item_detail_quer
 
     assert result["items"][0]["id"] == 301
     assert result["items"][0]["automationId"] == 17
-    detail_queries = [query for query, _ in connection.queries if "FROM execution_result_summary result" in query]
+    detail_queries = [query for query, _ in connection.queries if "FROM execution_result_summary result" in query and "GROUP BY" not in query]
     assert len(detail_queries) == 1
     assert "run.workflow_run_id = CASE" in detail_queries[0]
     assert "run.workflow_run_id::text" not in detail_queries[0]

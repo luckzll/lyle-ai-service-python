@@ -20,10 +20,14 @@ def list_confirmations(user_id: str, limit: int = 100) -> dict[str, Any]:
                ORDER BY CASE risk_level WHEN 'high' THEN 3 WHEN 'write' THEN 2 ELSE 1 END DESC,
                created_at ASC LIMIT %s""", (user_id, max(1, min(limit, 200))),
         ).fetchall()
+        total = int(conn.execute(
+            "SELECT COUNT(*) FROM agent_pending_operation WHERE user_id=%s AND status='pending'",
+            (user_id,),
+        ).fetchone()[0])
     items = [_display(row) for row in rows]
     if items:
         record_event(user_id, "confirmation_viewed", status="pending")
-    return {"items": items}
+    return {"items": items, "total": total, "hasMore": total > len(items)}
 
 
 def get_confirmation(user_id: str, operation_id: int) -> dict[str, Any]:
