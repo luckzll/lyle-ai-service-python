@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.chat_progress import emit_step, sanitize_timings
 from app.chat_attachments import current_attachments
 from app.memory.overview import build_memory_overview_answer
+from app.memory.conversation_context import load_conversation_context
 from app.rag.query_context import query_context_scope
 
 
@@ -59,9 +60,9 @@ def _step_outcome(agent: str, trace: dict[str, object]) -> tuple[str, str]:
     if agent == "reviewer_agent":
         if trace.get("approved") is False:
             return "failed", "回答内容检查未通过"
-        if trace.get("skipped"):
-            return "completed", "已完成回答内容的规则检查"
-        return "completed", "回答内容检查已结束"
+        if trace.get("modelReviewUsed") is False or ("modelReviewUsed" not in trace and trace.get("skipped")):
+            return "skipped", "本地规则检查完成，本轮无需模型复核"
+        return "completed", "模型复核完成"
     if trace.get("skipped"):
         return "skipped", _SKIPPED_FEEDBACK.get(agent, "本轮未执行此步骤")
     if agent == "supervisor_agent":
@@ -364,18 +365,19 @@ def tool_agent_node(state: MultiAgentState) -> MultiAgentState:
 def route_after_supervisor(state: MultiAgentState) -> list[Send]:
     supervisor = state["supervisor"]
     sends = []
-    if supervisor.get("use_memory", True):
+    if supervisor.get("use_memory", False):
         sends.append(Send("memory_agent", state))
     if supervisor.get("use_rag", False):
         sends.append(Send("rag_agent", state))
     if supervisor.get("use_tools", False):
         sends.append(Send("tool_agent", state))
-    dispatched = sends or [Send("memory_agent", state)]
-    active = {item.node for item in dispatched}
+    active = {item.node for item in sends}
     for agent in ("memory_agent", "rag_agent", "tool_agent"):
         if agent not in active:
             emit_step(agent, "skipped", duration_ms=0, summary=_SKIPPED_FEEDBACK[agent])
-    return dispatched
+    # No specialist work is a valid plan. Keep continuity/governance in gather,
+    # rather than forcing a memory node solely to connect the graph.
+    return sends or [Send("gather_agent", state)]
 
 
 @_progress_node("gather_agent")
@@ -383,7 +385,9 @@ def gather_agent_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     outputs = state.get("agent_outputs", [])
     by_agent = {str(item.get("agent")): item for item in outputs}
-    memory_output = by_agent.get("memory_agent", {})
+    memory_output = by_agent.get("memory_agent")
+    if memory_output is None or (memory_output.get("trace") or {}).get("skipped"):
+        memory_output = load_conversation_context(state["user_id"], state["conversation_id"])
     rag_output = by_agent.get("rag_agent", {})
     tool_output = by_agent.get("tool_agent", {})
     ordered_trace = [
@@ -455,6 +459,7 @@ def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
                 "approved": review.get("approved"),
                 "score": review.get("score"),
                 "skipped": review.get("skipped", False),
+                **({"modelReviewUsed": review["modelReviewUsed"]} if "modelReviewUsed" in review else {}),
                 "elapsedMs": _elapsed_ms(started),
             },
         ],

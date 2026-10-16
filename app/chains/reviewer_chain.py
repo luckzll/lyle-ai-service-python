@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.llm.tasks.judge_model import build_judge_task_model, is_judge_model_configured
+from app.chat_progress import emit_step
 
 
 def invoke_reviewer_chain(
@@ -15,9 +16,10 @@ def invoke_reviewer_chain(
     tool_results: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     if not is_judge_model_configured():
-        return _rule_review(question, answer, contexts, memory_context)
+        return {**_rule_review(question, answer, contexts, memory_context), "modelReviewUsed": False}
 
     model = build_judge_task_model().bind(response_format={"type": "json_object"})
+    emit_step("reviewer_agent", "running", summary="正在进行模型复核")
     response = model.invoke([
         SystemMessage(
             content=(
@@ -44,7 +46,7 @@ def invoke_reviewer_chain(
             )
         ),
     ])
-    return _parse_review_json(str(response.content or ""))
+    return {**_parse_review_json(str(response.content or "")), "modelReviewUsed": True}
 
 
 def _rule_review(

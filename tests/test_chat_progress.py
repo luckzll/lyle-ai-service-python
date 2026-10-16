@@ -69,6 +69,7 @@ def test_real_graph_reports_parallel_starts_completion_order_and_rag_timings(mon
 
 
 def test_overlapping_requests_keep_langgraph_worker_contexts_isolated(monkeypatch):
+    monkeypatch.setattr(graph, 'load_conversation_context', lambda *_: {'memory': {}, 'memory_context': ''})
     supervisor_barrier = Barrier(2)
     rag_barrier = Barrier(2)
 
@@ -122,6 +123,7 @@ def test_failed_node_reports_failure_without_exception_content(monkeypatch):
 
 
 def test_no_dispatched_agents_and_decision_skip_are_explicit(monkeypatch):
+    monkeypatch.setattr(graph, 'load_conversation_context', lambda *_: {'memory': {}, 'memory_context': ''})
     monkeypatch.setattr(graph, "run_supervisor_agent", lambda *_: _supervisor(memory=False, rag=False))
     events = []
     with progress_scope(events.append):
@@ -180,7 +182,7 @@ def test_tool_feedback_only_reports_confirmation_for_an_actual_pending_operation
 
 
 @pytest.mark.parametrize(("approved", "skipped", "status", "summary"), [
-    (True, True, "completed", "已完成回答内容的规则检查"),
+    (True, True, "skipped", "本地规则检查完成，本轮无需模型复核"),
     (False, False, "failed", "回答内容检查未通过"),
 ])
 def test_review_feedback_distinguishes_local_check_from_disabled_model_and_rejection(

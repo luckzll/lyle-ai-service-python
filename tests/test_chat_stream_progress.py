@@ -97,7 +97,7 @@ def test_prepare_reports_running_and_heartbeat_before_work_finishes(monkeypatch,
 
 @pytest.mark.parametrize(("project_context", "status", "summary"), [
     ({"resolver": {"projectId": None, "requiresClarification": False}, "context": {}},
-     "completed", "未匹配到项目，继续使用本轮对话上下文"),
+     "skipped", "未匹配到项目，继续使用本轮对话上下文"),
     ({}, "skipped", "本轮未取得项目识别结果"),
     ({"resolver": {"projectId": 7, "requiresClarification": True}, "context": {"summary": "private project"}},
      "completed", "项目归属仍需确认，暂未采用项目上下文"),
@@ -113,6 +113,7 @@ def test_prepare_reports_running_and_heartbeat_before_work_finishes(monkeypatch,
 def test_project_feedback_uses_actual_resolution_instead_of_outer_object_truthiness(
     monkeypatch, stream_env, project_context, status, summary,
 ):
+    monkeypatch.setattr(chat, "should_resolve_project", lambda *_: True)
     monkeypatch.setattr(chat, "_project_context_for_response", lambda *_: project_context)
     monkeypatch.setattr(chat, "stream_answer", lambda *_: iter(["当前回答。 "]))
     events = asyncio.run(collect(chat.chat_stream(request())))
@@ -121,6 +122,33 @@ def test_project_feedback_uses_actual_resolution_instead_of_outer_object_truthin
     assert project_events[-1]["summary"] == summary
     assert "private" not in json.dumps(project_events)
     assert any(name == "done" for name, _ in events)
+
+
+def test_plain_question_skips_project_resolution_and_marks_rule_review_truthfully(monkeypatch, stream_env):
+    monkeypatch.setattr(chat, "should_resolve_project", lambda *_: False)
+    def unexpected_resolution(*_):
+        raise AssertionError("plain question should not scan projects")
+    monkeypatch.setattr(chat, "_project_context_for_response", unexpected_resolution)
+    monkeypatch.setattr(chat, "stream_answer", lambda *_: iter(["流式响应逐段传输内容。" * 20]))
+    events = asyncio.run(collect(chat.chat_stream(request())))
+    project_events = [data for name, data in events if name == "agent.step" and data["step"] == "project_resolver"]
+    assert [item["status"] for item in project_events] == ["skipped"]
+    reviews = [data for name, data in events if name == "agent.step" and data["step"] == "reviewer_agent"]
+    assert reviews[-1]["status"] == "skipped"
+    assert reviews[-1]["summary"] == "本地规则检查完成，本轮无需模型复核"
+    assert any(name == "done" for name, _ in events)
+
+
+def test_real_model_review_is_distinguished_from_local_rules(monkeypatch, stream_env):
+    monkeypatch.setattr(settings, "reviewer_enabled", True)
+    monkeypatch.setattr(chat, "stream_answer", lambda *_: iter(["经过复核的回答。 "]))
+    monkeypatch.setattr(chat, "run_reviewer_agent", lambda *_, **__: {
+        "approved": True, "skipped": False, "modelReviewUsed": True,
+    })
+    events = asyncio.run(collect(chat.chat_stream(request())))
+    reviews = [data for name, data in events if name == "agent.step" and data["step"] == "reviewer_agent"]
+    assert reviews[-1]["status"] == "completed"
+    assert reviews[-1]["summary"] == "模型复核完成"
 
 
 def test_plain_answer_delta_arrives_before_model_finishes_and_matches_saved_answer(monkeypatch, stream_env):
@@ -273,7 +301,7 @@ def test_incremental_rule_rejection_does_not_publish_rejected_chunk():
     {"memory_statement": True}, {"memory_overview": True}, {"has_attachments": True},
     {"memory": {"governance": {"blockedTerms": [{"value": "x"}]}}},
     {"memory": {"governance": {"lowConfidenceTerms": [{"value": "x"}]}}},
-    {"tool_results": [{"ok": False}]}, {"project_context": {"resolver": {}}},
+    {"tool_results": [{"ok": False}]}, {"project_context": {"resolver": {"projectId": 9}}},
     {"candidate_goals": [{"title": "goal"}]}, {"candidate_plans": [{"title": "plan"}]},
     {"sufficiency": {"sufficient": False}},
 ])

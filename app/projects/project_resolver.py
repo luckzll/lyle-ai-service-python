@@ -1,8 +1,105 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
+from app.core.config import settings
+from app.core.database import postgres_connection
 from app.projects.project_store import create_project_link, get_project, list_project_links, list_projects
+
+
+def should_resolve_project(
+    message: str,
+    project_id: int | None = None,
+    conversation_id: str | None = None,
+    user_id: str | None = None,
+) -> bool:
+    """Skip clearly independent turns without losing project follow-ups.
+
+    This gate never selects or grants access to a project. The regular resolver
+    still validates ownership, active status, ambiguity and conversation links.
+    Unknown requests keep that resolver; only clear independent requests skip it.
+    """
+    if project_id is not None:
+        return True
+    text = (message or "").strip().lower().strip("。！？!? ")
+    if not text:
+        return False
+    if _looks_project_related(text) or any(term in text for term in ("lyle", "进展", "进度")):
+        return True
+    if _is_project_context_followup(text):
+        if not conversation_id:
+            return _looks_project_followup(text)
+        if not user_id:
+            return True  # Missing identity must not silently discard context.
+        return _has_active_conversation_project_link(user_id, conversation_id)
+    if text in {"你好", "您好", "嗨", "hi", "hello", "在吗", "谢谢", "多谢", "你是谁"}:
+        return False
+    if re.fullmatch(r"(?:请)?(?:帮我)?(?:(?:计算|算)(?:一下|算)?)?\s*[0-9\s.+*/%()（）=×÷^−-]+(?:等于|是)?(?:多少|几|什么)?", text):
+        return False
+    explanation = bool(re.match(r"^(?:请)?(?:帮我)?(?:解释|介绍|科普|讲解|讲讲)(?:一下|下)?", text))
+    explanation = explanation or text.startswith(("什么是", "what is ", "what are ", "explain "))
+    external_search = any(term in text for term in ("联网搜索", "联网查", "网上搜", "网上查", "上网搜", "搜索一下", "搜一下", "搜一搜", "web search", "search the web"))
+    if explanation or external_search:
+        return _mentions_known_project(text, user_id)
+    return True
+
+
+def _mentions_known_project(text: str, user_id: str | None) -> bool:
+    """A generic verb does not erase an explicitly named, owned active project.
+
+    This bounded precheck only reads candidate metadata. Ownership, ambiguity,
+    links and context are still handled by the existing resolver afterwards.
+    """
+    if not user_id or not settings.postgres_enabled:
+        return False
+    try:
+        projects = list_projects(user_id, status="active", limit=50)
+    except Exception:
+        # Failed optimization must retain the normal resolver/error reporting.
+        return True
+    return any(
+        keyword.lower() in text
+        for project in projects
+        for keyword in _project_keywords(
+            str(project.get("name") or ""), str(project.get("slug") or ""),
+            str(project.get("description") or ""), str(project.get("currentStage") or ""),
+        )
+    )
+
+
+def _is_project_context_followup(text: str) -> bool:
+    if _looks_project_followup(text):
+        return True
+    if text in {"好", "好的", "可以", "行", "嗯", "ok", "yes", "yes please", "好吧", "没问题"}:
+        return True
+    if any(term in text for term in ("它", "这个", "这件事", "这段", "这份", "这张", "那个", "这些", "上述", "前面", "刚才", "上次", "之前", "接着", "展开", "详细一点", "具体一点")):
+        return True
+    return len(text) <= 30 and bool(re.search(r"(?:改|调整|换成|做成|优化|实现|部署|发布|同步|执行|修改|补充)", text))
+
+
+def _has_active_conversation_project_link(user_id: str, conversation_id: str) -> bool:
+    """One bounded lookup instead of enumerating projects and each link list."""
+    if not settings.postgres_enabled:
+        return False
+    try:
+        with postgres_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM project_link AS link
+                JOIN project ON project.id = link.project_id AND project.user_id = link.user_id
+                WHERE link.user_id = %s AND project.user_id = %s
+                  AND link.target_type = 'conversation' AND link.target_id = %s
+                  AND project.status = 'active'
+                LIMIT 1
+                """,
+                (user_id, user_id, conversation_id),
+            ).fetchone()
+        return row is not None
+    except Exception:
+        # A failed optimization must not strip a previously associated project.
+        return True
 
 
 def resolve_project(user_id: str, conversation_id: str | None, user_input: str, project_id: int | None = None) -> dict[str, Any]:
@@ -97,7 +194,7 @@ def resolve_project(user_id: str, conversation_id: str | None, user_input: str, 
             "projectId": None,
             "projectName": "",
             "confidence": 0.0,
-            "requiresClarification": len(projects) > 1 and (_looks_project_related(text) or _looks_project_followup(text)),
+            "requiresClarification": len(projects) > 1 and (_looks_project_related(text) or _is_project_context_followup(text)),
             "reason": "输入像项目讨论，但没有命中项目名称或描述关键词" if _looks_project_related(text) else "未命中项目关键词",
             "candidates": [{"projectId": item["id"], "projectName": item["name"]} for item in projects[:5]],
         }
@@ -147,7 +244,10 @@ def _project_keywords(name: str, slug: str, description: str, stage: str) -> lis
 
 
 def _looks_project_related(text: str) -> bool:
-    return any(keyword in text for keyword in ["项目", "版本", "目标", "里程碑", "任务", "规划", "复盘", "prd", "v2", "v3"])
+    return (
+        any(keyword in text for keyword in ["项目", "版本", "目标", "里程碑", "任务", "规划", "复盘", "prd", "v2", "v3"])
+        or bool(re.search(r"\b(?:project|milestone|roadmap|sprint)\b", text))
+    )
 
 
 def _looks_project_followup(text: str) -> bool:
@@ -161,7 +261,7 @@ def _project_from_conversation_link(
     text: str,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     from app.memory.fact_store import enabled as facts_enabled
-    if not conversation_id or (not facts_enabled() and not _looks_project_followup(text)):
+    if not conversation_id or (not facts_enabled() and not _is_project_context_followup(text)):
         return None
     best: tuple[dict[str, Any], dict[str, Any]] | None = None
     linked_ids = set()
