@@ -7,8 +7,9 @@ from app.memory.profile_schema import PROFILE_SCHEMA
 _RULES: list[tuple[tuple[str, ...], list[str], str, str]] = [
     (("喜欢什么", "讨厌什么", "我的偏好"), ["preferences.food.likes", "preferences.food.dislikes", "preferences.general.likes", "preferences.general.dislikes", "preferences.visual.likes", "preferences.visual.dislikes", "preferences.entertainment.likes", "preferences.entertainment.dislikes"], "用户在询问已有偏好。", "preferences"),
     (("记得我什么", "你记得", "我的记忆", "用户画像", "记忆概览"), ["*"], "用户要求查看完整记忆概览。", "overview"),
-    (("名字", "我是谁", "身份", "介绍我", "怎么称呼"), ["identity.name", "identity.alias", "identity.language", "identity.zodiac"], "用户在询问身份信息。", "identity"),
-    (("职业", "工作", "岗位", "产品经理", "工程师", "背景"), ["work.current_role", "work.background", "work.working_style", "work.company_or_project"], "用户在询问工作背景。", "work"),
+    (("我是谁", "身份", "角色", "介绍我"), ["work.current_role", "work.background", "identity.name", "identity.alias"], "用户在询问个人身份与当前角色。", "identity"),
+    (("名字", "怎么称呼"), ["identity.name", "identity.alias", "identity.language", "identity.zodiac"], "用户在询问称呼信息。", "identity"),
+    (("职业", "工作", "岗位", "技能", "经验", "产品经理", "工程师", "背景"), ["work.current_role", "work.background", "work.working_style", "work.company_or_project"], "用户在询问工作背景。", "work"),
     (("项目", "规划", "推进", "产品定位", "文档", "需求", "方案", "PRD", "prd", "MVP", "mvp"), ["work.current_role", "work.background", "projects.current", "projects.decisions", "projects.open_questions", "goals.current_week", "preferences.output_style", "preferences.communication_style"], "用户在询问项目或工作规划。", "project"),
     (("这周", "本周", "目标", "计划", "待办", "进度", "复盘"), ["goals.current_week", "goals.current_month", "projects.current", "work.current_role", "preferences.output_style"], "用户在询问近期目标或计划。", "planning"),
     (("图片", "头像", "帽子", "帽衫", "视觉", "风格", "配色", "设计", "颜色", "形象", "画面"), ["preferences.visual.likes", "preferences.visual.dislikes"], "用户在询问视觉偏好。", "visual"),
