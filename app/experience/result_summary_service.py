@@ -55,6 +55,38 @@ RESULT_SELECT = """
 """
 
 RESULT_FROM = RESULT_SELECT[RESULT_SELECT.index("  FROM execution_result_summary result"):]
+# Counts use the underlying runs even when their derived summary is missing or
+# stale. This stays read-only; the limited page hydration below is unchanged.
+COUNT_RESULT_SOURCES = """
+  WITH workflow_status AS (
+    SELECT run.id, run.user_id, run.project_id,
+      CASE run.status
+        WHEN 'completed' THEN 'completed'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'paused' THEN 'awaiting_confirmation'
+        ELSE 'partial'
+      END AS status
+    FROM workflow_run run
+    WHERE run.user_id = %s
+  ), count_results AS (
+    SELECT run.user_id, 'workflow_run' AS source_type, CAST(run.id AS TEXT) AS source_id,
+      run.project_id, run.status,
+      CASE WHEN summary.status = run.status THEN summary.dismissed_at END AS dismissed_at
+    FROM workflow_status run
+    LEFT JOIN execution_result_summary summary
+      ON summary.user_id = run.user_id AND summary.source_type = 'workflow_run'
+      AND summary.source_id = CAST(run.id AS TEXT)
+    UNION ALL
+    SELECT summary.user_id, summary.source_type, summary.source_id,
+      summary.project_id, summary.status, summary.dismissed_at
+    FROM execution_result_summary summary
+    WHERE summary.user_id = %s AND NOT EXISTS (
+      SELECT 1 FROM workflow_status run
+      WHERE summary.source_type = 'workflow_run' AND summary.source_id = CAST(run.id AS TEXT)
+    )
+  )
+"""
+COUNT_RESULT_FROM = RESULT_FROM.replace("FROM execution_result_summary result", "FROM count_results result", 1)
 RESULT_STATUSES = ("completed", "partial", "failed", "awaiting_confirmation")
 GENERIC_TITLES = {"执行已完成", "执行需要处理", "已完成", "检查完成"}
 GENERIC_CONCLUSIONS = {
@@ -218,8 +250,9 @@ def list_results(
     params.append(page_limit + 1)
     with postgres_connection() as conn:
         counts = conn.execute(
-            f"SELECT result.status, COUNT(*) {RESULT_FROM} WHERE {' AND '.join(count_clauses)} GROUP BY result.status",
-            count_params,
+            f"{COUNT_RESULT_SOURCES} SELECT result.status, COUNT(*) {COUNT_RESULT_FROM} "
+            f"WHERE {' AND '.join(count_clauses)} GROUP BY result.status",
+            [user_id, user_id, *count_params],
         ).fetchall()
         rows = conn.execute(
             f"{RESULT_SELECT} WHERE {' AND '.join(clauses)} "

@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
+import sqlite3
 
 import pytest
 from fastapi import HTTPException
@@ -197,11 +198,63 @@ def test_status_counts_share_filters_but_ignore_cursor_and_page_limit(monkeypatc
         assert clause in count_query and clause in page_query
     assert "(result.created_at, result.id) <" not in count_query
     assert "LIMIT %s" not in count_query
-    assert count_params == ["owner", *([status] if status else []), 7, 17]
-    assert len(page_params) == len(count_params) + 3
+    assert count_params == ["owner", "owner", "owner", *([status] if status else []), 7, 17]
+    assert len(page_params) == len(count_params) + 1
+    assert "FROM count_results result" in count_query
+    assert count_query.count("run.user_id = %s") == 1
+    assert "summary.user_id = %s AND NOT EXISTS" in count_query
     assert len(response["items"]) == 1
     assert response["statusCounts"]["failed"] == 29
     assert response["statusCounts"]["partial"] == (7 if status is None else 0)
+
+
+def test_count_sources_cover_unhydrated_runs_stale_status_and_nonworkflow_history():
+    # Execute the production CTE against real SQL tables. These source operations
+    # are portable SQL; the outer PostgreSQL joins are covered by filter tests.
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript("""
+            CREATE TABLE workflow_run(id INTEGER, user_id TEXT, project_id INTEGER, status TEXT);
+            CREATE TABLE execution_result_summary(
+                user_id TEXT, source_type TEXT, source_id TEXT, project_id INTEGER,
+                status TEXT, dismissed_at TEXT
+            );
+        """)
+        connection.executemany("INSERT INTO workflow_run VALUES (?, ?, ?, ?)", [
+            *((run_id, "owner", 7, "failed") for run_id in range(1, 13)),
+            (20, "owner", 7, "paused"), (21, "owner", 7, "failed"),
+            (22, "owner", 8, "completed"), (23, "owner", 7, "running"),
+            (99, "other-owner", 7, "failed"),
+        ])
+        connection.executemany("INSERT INTO execution_result_summary VALUES (?, ?, ?, ?, ?, ?)", [
+            ("owner", "workflow_run", "1", 8, "completed", "previously-dismissed"),
+            ("owner", "workflow_run", "20", 7, "partial", "previously-dismissed"),
+            ("owner", "workflow_run", "21", 7, "failed", "still-dismissed"),
+            ("owner", "workflow_run", "22", 8, "failed", None),
+            ("owner", "automation", "500", 7, "failed", None),
+            ("owner", "workflow_run", "999", 7, "failed", None),
+            ("other-owner", "workflow_run", "1", 7, "failed", None),
+        ])
+        original_summaries = connection.execute("SELECT * FROM execution_result_summary").fetchall()
+        source_sql = results.COUNT_RESULT_SOURCES.replace("%s", "?")
+        count_sql = source_sql + "SELECT status, COUNT(*) FROM count_results GROUP BY status"
+        # Twelve failures exceed the homepage's eight-row hydration limit. The
+        # stale completed/partial records cannot hide their current run states.
+        counts = dict(connection.execute(count_sql, ("owner", "owner")).fetchall())
+        assert counts == {"completed": 1, "failed": 15, "partial": 1, "awaiting_confirmation": 1}
+        rows = connection.execute(source_sql + "SELECT source_id, project_id, status, dismissed_at "
+                                  "FROM count_results WHERE source_type='workflow_run'",
+                                  ("owner", "owner")).fetchall()
+        by_source = {row[0]: row[1:] for row in rows}
+        assert by_source["1"] == (7, "failed", None)
+        assert by_source["20"] == (7, "awaiting_confirmation", None)
+        assert by_source["21"] == (7, "failed", "still-dismissed")
+        assert "99" not in by_source and len(by_source) == 17
+        attention = connection.execute(source_sql + "SELECT COUNT(*) FROM count_results "
+                                       "WHERE project_id=7 AND dismissed_at IS NULL "
+                                       "AND status IN ('failed','partial','awaiting_confirmation')",
+                                       ("owner", "owner")).fetchone()[0]
+        assert attention == 16
+        assert connection.execute("SELECT * FROM execution_result_summary").fetchall() == original_summaries
 
 
 def test_legacy_summary_uses_source_name_and_conclusion_without_mutating_history():
