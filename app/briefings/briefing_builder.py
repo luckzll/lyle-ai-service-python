@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
 from app.core.config import settings
 from app.core.database import postgres_connection
 from app.goals.goal_store import list_goals
-from app.projects.project_store import list_projects
+from app.projects.project_store import _project_row, get_project
+
+
+BRIEFING_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 def get_today_briefing(user_id: str, project_id: int | None = None) -> dict[str, Any]:
@@ -20,23 +24,22 @@ def get_today_briefing(user_id: str, project_id: int | None = None) -> dict[str,
 
 def generate_daily_briefing(user_id: str, project_id: int | None = None, persist: bool = True) -> dict[str, Any]:
     _ensure_postgres()
-    projects = list_projects(user_id, status="active", limit=20)
-    if project_id is not None:
-        projects = [project for project in projects if int(project["id"]) == int(project_id)]
-    focus_project = projects[0] if projects else None
+    now = datetime.now(UTC)
+    projects = _list_briefing_projects(user_id, project_id)
+    focus_project = projects[0] if project_id is not None and projects else None
     goals = list_goals(user_id, project_id=int(focus_project["id"]) if focus_project else None, status="active", limit=10)
-    todos = _list_todos(user_id, limit=50)
-    operations = _list_pending_operations(user_id, limit=20)
-    overdue = [item for item in todos if item.get("isOverdue")]
-    today = [item for item in todos if item.get("isToday")]
+    operations = _list_pending_operations(user_id, limit=5, project_id=project_id)
+    overdue = _list_todos(user_id, limit=5, now=now, project_id=project_id, bucket="overdue")
+    today = _list_todos(user_id, limit=5, now=now, project_id=project_id, bucket="today")
+    counts = _briefing_counts(user_id, now=now, project_id=project_id)
     suggestions = _suggestions(focus_project, goals, today, overdue, operations)
-    title = "今日项目简报"
+    title = "今日项目计划简报"
     content = "\n".join([
-        f"当前项目：{focus_project.get('name') if focus_project else '未设置'}",
+        f"当前项目计划：{focus_project.get('name') if focus_project else '未设置'}",
         f"进行中目标：{len(goals)} 个",
-        f"今日到期任务：{len(today)} 个",
-        f"逾期任务：{len(overdue)} 个",
-        f"待确认操作：{len(operations)} 个",
+        f"今日到期任务：{counts['dueToday']} 个",
+        f"逾期任务：{counts['overdue']} 个",
+        f"待确认操作：{counts['pending']} 个",
         "建议下一步：" + ("；".join(suggestions) if suggestions else "先选择一个项目目标继续推进"),
     ])
     briefing = {
@@ -51,6 +54,7 @@ def generate_daily_briefing(user_id: str, project_id: int | None = None, persist
         "dueTasks": today[:5],
         "overdueTasks": overdue[:5],
         "pendingOperations": operations[:5],
+        "counts": counts,
         "createdAt": datetime.now(UTC).isoformat(),
     }
     if persist:
@@ -78,15 +82,13 @@ def generate_review_briefing(
     _ensure_postgres()
     if briefing_type not in {"evening", "weekly"}:
         raise HTTPException(status_code=400, detail="复盘类型仅支持 evening 或 weekly。")
-    projects = list_projects(user_id, status="active", limit=20)
-    if project_id is not None:
-        projects = [project for project in projects if int(project["id"]) == int(project_id)]
-    focus_project = projects[0] if projects else None
+    projects = _list_briefing_projects(user_id, project_id)
+    focus_project = projects[0] if project_id is not None and projects else None
     focus_project_id = int(focus_project["id"]) if focus_project else None
     goals = list_goals(user_id, project_id=focus_project_id, status="active", limit=10)
     days = 7 if briefing_type == "weekly" else 1
-    completed = _list_completed_todos(user_id, days=days, limit=20)
-    overdue = [item for item in _list_todos(user_id, limit=50) if item.get("isOverdue")]
+    completed = _list_completed_todos(user_id, days=days, limit=20, project_id=project_id)
+    overdue = _list_todos(user_id, limit=5, project_id=project_id, bucket="overdue")
     decisions = _list_project_decisions(user_id, focus_project_id, days=days, limit=10)
     questions = _list_project_open_questions(user_id, focus_project_id, limit=10)
     suggestions = _review_suggestions(goals, overdue, questions)
@@ -137,18 +139,77 @@ def generate_review_briefing(
     return briefing
 
 
-def _list_todos(user_id: str, limit: int) -> list[dict[str, Any]]:
-    now = datetime.now(UTC)
+def _list_briefing_projects(user_id: str, project_id: int | None) -> list[dict[str, Any]]:
+    if project_id is not None:
+        project = get_project(user_id, project_id)
+        if project.get("status") != "active":
+            raise HTTPException(status_code=404, detail="活跃项目计划不存在。")
+        return [project]
     with postgres_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id, title, status, due_at, conversation_id, created_at, updated_at
+            SELECT id, name, slug, description, status, current_stage, priority,
+                   last_activity_at, created_at, updated_at
+            FROM project
+            WHERE user_id = %s AND status = 'active'
+            ORDER BY COALESCE(last_activity_at, updated_at) DESC, priority DESC, id DESC
+            LIMIT 5
+            """,
+            (user_id,),
+        ).fetchall()
+    return [_project_row(row) for row in rows]
+
+
+def _day_bounds(now: datetime) -> tuple[datetime, datetime]:
+    local = now.astimezone(BRIEFING_TIMEZONE)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(UTC), (start + timedelta(days=1)).astimezone(UTC)
+
+
+def _briefing_counts(user_id: str, *, now: datetime, project_id: int | None) -> dict[str, int]:
+    start, end = _day_bounds(now)
+    todo_scope = " AND project_id = %s" if project_id is not None else ""
+    operation_scope = " AND payload->>'projectId' = %s" if project_id is not None else ""
+    with postgres_connection() as conn:
+        todos = conn.execute(
+            """SELECT COUNT(*) FILTER (WHERE due_at >= %s AND due_at < %s),
+                      COUNT(*) FILTER (WHERE due_at < %s)
+               FROM agent_todo WHERE user_id = %s AND status = 'open'""" + todo_scope,
+            (start, end, now, user_id, *([project_id] if project_id is not None else [])),
+        ).fetchone()
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM agent_pending_operation WHERE user_id = %s AND status = 'pending'" + operation_scope,
+            (user_id, *([str(project_id)] if project_id is not None else [])),
+        ).fetchone()
+    return {"dueToday": int(todos[0]), "overdue": int(todos[1]), "pending": int(pending[0])}
+
+
+def _list_todos(user_id: str, limit: int, *, now: datetime | None = None,
+                project_id: int | None = None, bucket: str | None = None) -> list[dict[str, Any]]:
+    now = now or datetime.now(UTC)
+    start, end = _day_bounds(now)
+    clauses = ["user_id = %s", "status = 'open'"]
+    params: list[Any] = [user_id]
+    if project_id is not None:
+        clauses.append("project_id = %s")
+        params.append(project_id)
+    if bucket == "today":
+        clauses.append("due_at >= %s AND due_at < %s")
+        params.extend((start, end))
+    elif bucket == "overdue":
+        clauses.append("due_at < %s")
+        params.append(now)
+    params.append(limit)
+    with postgres_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, title, status, due_at, conversation_id, created_at, updated_at, project_id
             FROM agent_todo
-            WHERE user_id = %s AND status = 'open'
+            WHERE {' AND '.join(clauses)}
             ORDER BY due_at ASC NULLS LAST, updated_at DESC
             LIMIT %s
             """,
-            (user_id, limit),
+            tuple(params),
         ).fetchall()
     items = []
     for row in rows:
@@ -159,25 +220,27 @@ def _list_todos(user_id: str, limit: int) -> list[dict[str, Any]]:
             "status": row[2],
             "dueAt": due_at.isoformat() if due_at else None,
             "conversationId": row[4],
-            "isToday": bool(due_at and due_at.date() == now.date()),
+            "isToday": bool(due_at and start <= due_at < end),
             "isOverdue": bool(due_at and due_at < now),
             "createdAt": row[5].isoformat(),
             "updatedAt": row[6].isoformat(),
+            "projectId": row[7],
         })
     return items
 
 
-def _list_pending_operations(user_id: str, limit: int) -> list[dict[str, Any]]:
+def _list_pending_operations(user_id: str, limit: int, project_id: int | None = None) -> list[dict[str, Any]]:
+    scope = " AND payload->>'projectId' = %s" if project_id is not None else ""
     with postgres_connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT id, tool_name, operation_type, risk_level, summary, created_at, updated_at
             FROM agent_pending_operation
-            WHERE user_id = %s AND status = 'pending'
+            WHERE user_id = %s AND status = 'pending'{scope}
             ORDER BY created_at DESC
             LIMIT %s
             """,
-            (user_id, limit),
+            (user_id, *([str(project_id)] if project_id is not None else []), limit),
         ).fetchall()
     return [
         {
@@ -193,18 +256,19 @@ def _list_pending_operations(user_id: str, limit: int) -> list[dict[str, Any]]:
     ]
 
 
-def _list_completed_todos(user_id: str, days: int, limit: int) -> list[dict[str, Any]]:
+def _list_completed_todos(user_id: str, days: int, limit: int, project_id: int | None = None) -> list[dict[str, Any]]:
     since = datetime.now(UTC) - timedelta(days=days)
+    scope = " AND project_id = %s" if project_id is not None else ""
     with postgres_connection() as conn:
         rows = conn.execute(
-            """
+            f"""
             SELECT id, title, status, due_at, conversation_id, created_at, updated_at
             FROM agent_todo
-            WHERE user_id = %s AND status IN ('done', 'completed') AND updated_at >= %s
+            WHERE user_id = %s AND status IN ('done', 'completed') AND updated_at >= %s{scope}
             ORDER BY updated_at DESC
             LIMIT %s
             """,
-            (user_id, since, limit),
+            (user_id, since, *([project_id] if project_id is not None else []), limit),
         ).fetchall()
     return [
         {
