@@ -20,9 +20,19 @@ def streaming_policy(*, reviewer_enabled: bool, contexts: list, memory: dict,
         return "memory_governance_review"
     if memory_statement or memory_overview:
         return "memory_confirmation_review"
-    if tool_results or project_context or candidate_goals or candidate_plans or has_attachments:
+    if tool_results or _has_project_dependencies(project_context) or candidate_goals or candidate_plans or has_attachments:
         return "tool_or_project_review"
     return "incremental"
+
+
+def _has_project_dependencies(project_context: dict) -> bool:
+    # The API returns a resolver envelope even when no project matched. That
+    # envelope alone must not turn every ordinary response into buffered output.
+    resolver = project_context.get("resolver") or {}
+    return bool(
+        (isinstance(resolver, dict) and (resolver.get("projectId") or resolver.get("requiresClarification")))
+        or project_context.get("context")
+    )
 
 
 class IncrementalAnswer:

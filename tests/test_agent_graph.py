@@ -420,7 +420,7 @@ def test_tool_agent_skips_when_router_needs_clarification(monkeypatch):
     assert "缺少具体时间" in decision["reason"]
 
 
-def test_supervisor_uses_tool_agent_when_llm_router_enabled(monkeypatch):
+def test_supervisor_does_not_use_tool_agent_for_chat_just_because_router_is_enabled(monkeypatch):
     from app.agents.supervisor_agent import run_supervisor_agent
 
     monkeypatch.setattr(settings, "tool_agent_enabled", True)
@@ -429,12 +429,14 @@ def test_supervisor_uses_tool_agent_when_llm_router_enabled(monkeypatch):
 
     result = run_supervisor_agent("随便聊聊", [])
 
-    assert result["use_tools"] is True
+    assert result["use_tools"] is False
+    assert result["use_memory"] is False
 
 
 def test_prepare_context_uses_supervisor_for_ordinary_chat(monkeypatch):
     from app.graphs.multi_agent_graph import prepare_multi_agent_context
 
+    monkeypatch.setattr('app.graphs.multi_agent_graph.load_conversation_context', lambda *_: {'memory': {}, 'memory_context': ''})
     called = {"supervisor": False}
     monkeypatch.setattr(
         "app.graphs.multi_agent_graph.run_supervisor_agent",
@@ -471,6 +473,7 @@ def test_prepare_context_uses_supervisor_for_ordinary_chat(monkeypatch):
 def test_prepare_context_uses_full_path_for_tool_signal(monkeypatch):
     from app.graphs.multi_agent_graph import prepare_multi_agent_context
 
+    monkeypatch.setattr('app.graphs.multi_agent_graph.load_conversation_context', lambda *_: {'memory': {}, 'memory_context': ''})
     called = {"supervisor": False, "tool": False}
 
     monkeypatch.setattr(

@@ -21,18 +21,18 @@ def run_reviewer_agent(
 ) -> dict[str, object]:
     rule_review = _rule_memory_governance_review(answer, memory or {}, tool_results or [])
     if not rule_review["approved"]:
-        return rule_review
+        return {**rule_review, "modelReviewUsed": False}
     memory_review_metadata = {
         "recalledMemoryRefs": rule_review.get("recalledMemoryRefs") or [],
     }
     overview_review = _rule_memory_overview_status_review(question, answer, memory or {}, tool_results or [])
     if not overview_review["approved"]:
-        return {**overview_review, **memory_review_metadata}
+        return {**overview_review, **memory_review_metadata, "modelReviewUsed": False}
     if overview_review.get("objectStatuses"):
         memory_review_metadata["objectStatuses"] = overview_review["objectStatuses"]
     rag_review = _rule_rag_grounding_review(question, answer, contexts, rag_sufficiency or {})
     if not rag_review["approved"]:
-        return {**rag_review, **memory_review_metadata}
+        return {**rag_review, **memory_review_metadata, "modelReviewUsed": False}
     v3_review = _rule_v3_project_work_review(
         question=question,
         answer=answer,
@@ -42,7 +42,7 @@ def run_reviewer_agent(
         candidate_plans=candidate_plans or [],
     )
     if not v3_review["approved"]:
-        return {**v3_review, **memory_review_metadata}
+        return {**v3_review, **memory_review_metadata, "modelReviewUsed": False}
     if not (current_review_config()[0] if model_review_enabled is None else model_review_enabled):
         return {
             "approved": True,
@@ -50,6 +50,7 @@ def run_reviewer_agent(
             "reason": "Reviewer disabled",
             "rewrite_instruction": "",
             "skipped": True,
+            "modelReviewUsed": False,
             **memory_review_metadata,
         }
     review = invoke_reviewer_chain(question, answer, contexts, memory_context, tool_results or [])
@@ -58,7 +59,8 @@ def run_reviewer_agent(
         "score": float(review.get("score") or 0),
         "reason": str(review.get("reason") or ""),
         "rewrite_instruction": str(review.get("rewrite_instruction") or ""),
-        "skipped": False,
+        "skipped": not bool(review.get("modelReviewUsed", True)),
+        "modelReviewUsed": bool(review.get("modelReviewUsed", True)),
         **memory_review_metadata,
     }
 

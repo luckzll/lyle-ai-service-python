@@ -29,7 +29,7 @@ from app.memory.overview import build_memory_overview_answer
 from app.plans.plan_builder import build_plan_candidate
 from app.projects.candidate_extractor import extract_project_candidates
 from app.projects.project_context_builder import build_project_context
-from app.projects.project_resolver import resolve_project
+from app.projects.project_resolver import resolve_project, should_resolve_project
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.security.chat_debug import build_safe_chat_debug
 from app.workflows.chat_suggestions import build_execution_suggestions
@@ -110,7 +110,7 @@ def _chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatRespon
         request.conversation_id,
         request.message,
         request.project_id,
-    )
+    ) if should_resolve_project(request.message, request.project_id, request.conversation_id, request.user_id) else {}
     project_prompt_context = _project_prompt_context(project_context)
     try:
         with temporary_ai_config(request.ai_config), request_retrieval_scope(
@@ -335,13 +335,17 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
         # Tool reads may have advanced deferred/partial records in the shared
         # request scope; the final writer receives their latest truthful state.
         attachment_context, attachment_results = build_turn_attachment_context(request)
-    project_started = perf_counter()
-    emit_step("project_resolver", "running", summary="正在确认项目上下文")
-    project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
-    project_status, project_feedback = _project_progress_feedback(project_context)
-    emit_step("project_resolver", project_status,
-              duration_ms=int((perf_counter() - project_started) * 1000),
-              summary=project_feedback)
+    project_context = {}
+    if should_resolve_project(request.message, request.project_id, request.conversation_id, request.user_id):
+        project_started = perf_counter()
+        emit_step("project_resolver", "running", summary="正在确认项目上下文")
+        project_context = _project_context_for_response(request.user_id, request.conversation_id, request.message, request.project_id)
+        project_status, project_feedback = _project_progress_feedback(project_context)
+        emit_step("project_resolver", project_status,
+                  duration_ms=int((perf_counter() - project_started) * 1000),
+                  summary=project_feedback)
+    else:
+        emit_step("project_resolver", "skipped", summary="本轮无需项目上下文")
     project_prompt_context = _project_prompt_context(project_context)
     project_candidates = extract_project_candidates(request.message, project_context)
     plan_candidate = build_plan_candidate(request.message, project_context)
@@ -503,7 +507,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                 emit_step("writer_agent", "completed", duration_ms=writer_duration_ms,
                           summary="回答生成完成", timings=writer_timings)
                 review_started = perf_counter()
-                emit_step("reviewer_agent", "running", summary="正在检查回答内容")
+                emit_step("reviewer_agent", "running", summary="正在执行本地规则检查")
                 candidate_memories = _prepare_candidate_memories_for_response(
                     request.user_id,
                     request.conversation_id,
@@ -535,6 +539,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                     candidate_plans=candidate_plans,
                     model_review_enabled=review_enabled,
                 )
+                model_review_used = bool(review.get("modelReviewUsed", not review.get("skipped", True)))
                 logger.info(
                     "chat_stream timing review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs skipped=%s approved=%s",
                     request.user_id,
@@ -549,6 +554,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                     "approved": review.get("approved"),
                     "score": review.get("score"),
                     "skipped": review.get("skipped", False),
+                    "modelReviewUsed": model_review_used,
                     "streaming": True,
                 })
 
@@ -598,6 +604,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                         candidate_plans=candidate_plans,
                         model_review_enabled=review_enabled,
                     )
+                    model_review_used = model_review_used or bool(review.get("modelReviewUsed", not review.get("skipped", True)))
                     logger.info(
                         "chat_stream timing rewrite_review_done. user_id=%s conversation_id=%s elapsed=%.3fs total=%.3fs approved=%s",
                         request.user_id,
@@ -611,6 +618,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                         "approved": review.get("approved"),
                         "score": review.get("score"),
                         "skipped": review.get("skipped", False),
+                        "modelReviewUsed": bool(review.get("modelReviewUsed", not review.get("skipped", True))),
                         "streaming": True,
                     })
 
@@ -625,9 +633,11 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
 
                 # A reviewer rewrite must not reintroduce a false persistence claim.
                 answer = _guard_unconfirmed_memory_claim(request.message, answer, candidate_memories)
-                emit_step("reviewer_agent", "completed" if review.get("approved", True) else "failed",
+                review_status = ("completed" if model_review_used else "skipped") if review.get("approved", True) else "failed"
+                review_summary = ("模型复核完成" if model_review_used else "本地规则检查完成，本轮无需模型复核") if review.get("approved", True) else "内容检查未通过"
+                emit_step("reviewer_agent", review_status,
                           duration_ms=int((perf_counter() - review_started) * 1000),
-                          summary="内容检查完成" if review.get("approved", True) else "内容检查未通过")
+                          summary=review_summary)
                 if incremental is not None:
                     delta = incremental.push(final=True)
                     if incremental.published != answer:
@@ -1197,7 +1207,7 @@ def _project_progress_feedback(project_context: dict[str, object]) -> tuple[str,
     if resolver.get("requiresClarification"):
         return "completed", "项目归属仍需确认，暂未采用项目上下文"
     if not resolver.get("projectId"):
-        return "completed", "未匹配到项目，继续使用本轮对话上下文"
+        return "skipped", "未匹配到项目，继续使用本轮对话上下文"
     context = project_context.get("context")
     if isinstance(context, dict) and context.get("error"):
         return "failed", "已识别关联项目，项目上下文暂时不可用"
