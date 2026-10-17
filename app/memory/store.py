@@ -1754,7 +1754,8 @@ def _extract_structured_candidates(
     control_candidates = _extract_memory_control_candidates(text)
     if control_candidates:
         return _dedupe_structured_candidates(control_candidates)
-    if _is_question_like_text(text):
+    text = _structured_memory_statement_text(text)
+    if not text:
         return []
     if _is_operational_memory_noise_text(text):
         return []
@@ -1926,7 +1927,52 @@ def _looks_like_strong_preference_text(text: str) -> bool:
 
 
 def _looks_like_direct_user_memory_statement(text: str) -> bool:
-    return any(marker in text for marker in ["我", "我的", "自己", "本人", "以后帮我", "可以默认我", "最近在做", "正在做"])
+    return any(marker in text for marker in ["我", "我的", "自己", "本人", "以后帮我", "可以默认我", "最近在做", "正在做", "请记住", "记一下", "记下来"])
+
+
+def _structured_memory_statement_text(text: str) -> str:
+    """Keep independent assertions when a turn also contains a question or task."""
+    if not (_is_question_like_text(text) or _is_operational_memory_noise_text(text) or _is_task_commitment_text(text)):
+        return text
+
+    # Source material must not turn into first-person facts after clause splitting.
+    text = re.sub(r"```[\s\S]*?(?:```|$)|`[^`\n]*`", "", text)
+    text = re.sub(
+        r'“[^”]*”|「[^」]*」|『[^』]*』|"[^"\n]*"|\x27[^\x27\n]*\x27',
+        lambda match: "" if _looks_like_direct_user_memory_statement(match.group()) else match.group(),
+        text,
+    )
+    statements: list[str] = []
+    personal_clause = re.compile(
+        r"^(?:(?:其实|另外|而且|不过|但是|但|对了)\s*)?"
+        r"(?:(?:请|帮我)?(?:记住|记一下|记下来)[：:\s]*)?(?:我|本人|自己|最近在做|正在做|以后帮我|可以默认我)"
+    )
+    source_scope = False
+    for sentence in re.split(r"(?<=[。.!！?？\n])", text):
+        for clause in re.split(r"(?<=[，,；;])", sentence):
+            clause = clause.strip()
+            # Source/task introductions also govern following lines and sentences.
+            if (re.search(r"假设|假如|假定|假装|如果|要是|倘若|比如|例如|示例|例句|台词|翻译|改写|润色|转述|引用|他说|她说|扮演|(?:说|写道|表示|提到)[：:]|(?:说|写道|表示|提到)[，,；;]?$", clause)
+                    or _is_operational_memory_noise_text(clause) or _is_task_commitment_text(clause)):
+                source_scope = True
+                break
+            if (clause.endswith(('：', ':')) and not personal_clause.match(clause)
+                    and not re.fullmatch(r"(?:请|帮我)?(?:记住|记一下|记下来)[：:\s]*", clause)):
+                source_scope = True
+                break
+            if _is_question_like_text(clause):
+                continue
+            if _looks_like_direct_user_memory_statement(clause) and not personal_clause.match(clause):
+                source_scope = True
+                break
+            if clause:
+                statements.append(clause.rstrip("，,；;"))
+        if source_scope:
+            break
+    # Keep nearby uncertainty qualifiers, but require an actual personal clause.
+    if not any(personal_clause.match(clause) for clause in statements):
+        return ""
+    return "\n".join(statements)
 
 
 def _extract_structured_candidates_by_llm(text: str, recent_turns: list[MemoryTurn]) -> list[tuple[str, str, float]]:

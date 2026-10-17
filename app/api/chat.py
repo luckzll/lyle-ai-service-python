@@ -769,6 +769,11 @@ def _image_chat_stream(
         })
         try:
             with temporary_ai_config(request.ai_config):
+                candidate_memories = _prepare_candidate_memories_for_response(
+                    request.user_id, request.conversation_id, request.message,
+                    request.ai_config, request.source_message_id,
+                )
+                memory_notice = _guard_unconfirmed_memory_claim(request.message, "", candidate_memories)
                 if tool_name == "image_analyze":
                     refs = extract_image_refs(image_message)
                     yield _sse("turn.status", {
@@ -780,6 +785,8 @@ def _image_chat_stream(
                     answer = _strip_unbacked_image_markdown(
                         str(result.get("content") or "图片分析没有返回结果。"), []
                     ) or "图片分析没有返回可用的文字结果，请重试。"
+                    if memory_notice:
+                        answer += f"\n\n{memory_notice}"
                     result = {**result, "content": answer}
                     elapsed_ms = int((perf_counter() - started) * 1000)
                     tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
@@ -799,7 +806,7 @@ def _image_chat_stream(
                             "imageCount": len(refs),
                             "streaming": True,
                     }]
-                    yield _sse("meta", build_safe_chat_debug(
+                    yield _sse("meta", {**build_safe_chat_debug(
                         knowledge_base_ids=request.knowledge_base_ids,
                         contexts=[],
                         agent_trace=image_trace,
@@ -808,7 +815,7 @@ def _image_chat_stream(
                         usage=_image_usage_payload(usage_context),
                         used_memories=[],
                         memory_exclusions={},
-                    ))
+                    ), "candidateMemories": candidate_memories, "memoryExplanationVersion": "v1"})
                     final_answer_holder["answer"] = answer
                     yield _sse("turn.status", {
                         "turnId": turn_id,
@@ -875,6 +882,8 @@ def _image_chat_stream(
                 result = build_image_batch_result(spec, items)
                 image_call.finish(result)
                 answer = str(result.get("content") or "图片生成没有返回结果。")
+                if memory_notice:
+                    answer += f"\n\n{memory_notice}"
                 elapsed_ms = int((perf_counter() - started) * 1000)
                 tool_result = {"tool": tool_name, **result, "elapsedMs": elapsed_ms}
                 audit_tool_call(
@@ -910,7 +919,7 @@ def _image_chat_stream(
                         "elapsedMillis": elapsed_ms,
                         "streaming": True,
                 }]
-                yield _sse("meta", build_safe_chat_debug(
+                yield _sse("meta", {**build_safe_chat_debug(
                     knowledge_base_ids=request.knowledge_base_ids,
                     contexts=[],
                     agent_trace=image_trace,
@@ -922,7 +931,7 @@ def _image_chat_stream(
                     usage=_image_usage_payload(usage_context),
                     used_memories=[],
                     memory_exclusions={},
-                ))
+                ), "candidateMemories": candidate_memories, "memoryExplanationVersion": "v1"})
                 yield _sse("turn.status", {
                     "turnId": turn_id,
                     "phase": "COMPLETED" if result.get("ok") else "FAILED",
