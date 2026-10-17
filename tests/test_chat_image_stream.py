@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from uuid import uuid4
 
 import pytest
 
 from app.api.chat import _image_chat_stream, chat_stream
+from app.core.config import settings
+from app.memory import store
 from app.schemas.chat import ChatAttachment, ChatAttachmentStorage, ChatRequest
 from app.usage.context import activate_model_call_context, set_model_call_context
 from app.usage.manual import begin_external_call, finish_external_call
@@ -32,6 +35,49 @@ async def _response_body(response) -> str:
     async for chunk in response.body_iterator:
         chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
     return "".join(chunks)
+
+
+@pytest.mark.parametrize('tool_name', ['image_analyze', 'image_generate', 'image_edit'])
+def test_image_stream_returns_pending_memories_from_user_text(monkeypatch, tool_name):
+    for flag in ('postgres_enabled', 'redis_enabled', 'qdrant_enabled', 'milvus_enabled'):
+        monkeypatch.setattr(settings, flag, False)
+    monkeypatch.setattr(settings, 'structured_memory_extractor', 'rule')
+    monkeypatch.setattr('app.api.chat.audit_tool_call', lambda **kwargs: None)
+    monkeypatch.setattr('app.api.chat.analyze_image_from_question', lambda text: {
+        'ok': True, 'content': '图片中的人物没有戴帽子。',
+    })
+    monkeypatch.setattr('app.tools.image_tool._execute_image_item', lambda spec, index: {
+        'index': index, 'status': 'COMPLETED', 'imageUrl': 'https://example.com/result.png',
+        'storageUsed': 'remote', 'storageError': '',
+    })
+    user_id = 'image-memory-' + uuid4().hex
+    request = ChatRequest(
+        userId=user_id, conversationId='image-memory-conversation', sourceMessageId='image-memory-source',
+        message='请记住：我不喜欢帽子。请处理这张图片 https://example.com/source.png',
+    )
+    response = _image_chat_stream(
+        request, tool_name, attachment_context='附件原文：我的职业是医生。',
+        usage_context=activate_model_call_context(request),
+    )
+    try:
+        events = _event_sequence(asyncio.run(_response_body(response)))
+    finally:
+        set_model_call_context(None)
+
+    meta = next(data for event, data in events if event == 'meta')
+    candidates = meta.get('candidateMemories', [])
+    assert len(candidates) == 1
+    assert candidates[0]['schemaPath'] == 'preferences.visual.dislikes'
+    assert candidates[0]['value'] == '帽子'
+    assert candidates[0]['status'] == 'pending'
+    assert ';message:image-memory-source' in candidates[0]['source']
+    assert '医生' not in str(candidates)
+    snapshot = store.export_memory(user_id, request.conversation_id)
+    assert any(item['key'] == candidates[0]['key'] for item in snapshot['structured_all'])
+    assert snapshot['profiles'] == []
+    answer = ''.join(str(data['text']) for event, data in events if event == 'delta')
+    expected_content = '图片中的人物没有戴帽子' if tool_name == 'image_analyze' else 'https://example.com/result.png'
+    assert expected_content in answer
 
 
 def test_image_batch_stream_emits_started_items_and_completion_incrementally(monkeypatch):

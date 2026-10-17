@@ -212,6 +212,25 @@ def _post_stream(client, headers, user_id: str, conversation_id: str, message: s
     return _sse_events(response.text)
 
 
+def test_stream_returns_pending_preference_from_statement_followed_by_question(monkeypatch):
+    from uuid import uuid4
+
+    user_id = 'mixed-question-stream-' + uuid4().hex
+    token = 'mixed-question-stream-token-123456'
+    _configure_cross_session_stream(monkeypatch, token, lambda *args: iter(['可以。']))
+    message = '请记住：我不喜欢帽子，可以吗？'
+    client = TestClient(app)
+    events = _post_stream(client, {'X-Internal-Token': token}, user_id, 'mixed-question', message)
+
+    candidates = events['meta'][0]['candidateMemories']
+    assert len(candidates) == 1
+    assert candidates[0]['status'] == 'pending'
+    assert candidates[0]['value'] == '帽子'
+    assert message in candidates[0]['source']
+    assert '确认后才会写入长期记忆' in ''.join(str(event['text']) for event in events['delta'])
+    assert recall_memory(user_id, 'new-conversation', '我的偏好', include_vector=False)['profiles'] == []
+
+
 def test_confirmed_active_memory_is_recalled_in_new_conversation_and_reviewer_allows(monkeypatch):
     user_id = "cross-session-active-reviewer-user"
     internal_token = "cross-session-active-reviewer-token-123456"
