@@ -52,6 +52,8 @@ def _execute_native(name: str, raw: dict, user_id: str, conversation_id: str | N
         result = parse_file(args.file_ref, user_id)
     else:
         text = values.get("query", values.get("prompt", question))
+        if name == "web_search" and ("http://" in question.lower() or "https://" in question.lower()):
+            text = question
         if name == "web_search" and args.time_range:
             text += f" 时间范围：{args.time_range}"
         if name in {"image_analyze", "image_edit"}:

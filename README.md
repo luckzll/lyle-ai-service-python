@@ -34,6 +34,14 @@ tests/                  # 自动化测试
 
 `/health` 仅用于进程存活检查；部署流量应以 `/ready` 为准。Docker 镜像构建会预拉取默认 FastEmbed 模型，服务启动时还会执行一次真实向量预热，避免首个用户请求承担模型下载和加载时间。
 
+## 读取公开网页
+
+用户在聊天中贴出公开的 HTTP/HTTPS 网址并询问页面内容时，`web_search` 会优先通过 Tavily Extract 读取该页正文，再把来源网址和截断后的正文交给回答模型。普通网页搜索仍走原有搜索接口。此功能使用现有开关和密钥：`TOOL_WEB_SEARCH_ENABLED=true`、`TOOL_WEB_SEARCH_PROVIDER=tavily`、`TOOL_WEB_SEARCH_API_KEY`，并确保 `TOOL_ALLOWED_NAMES` 包含 `web_search`。例如可以问：“介绍一下 https://www.deepseek.com/harness/ 的主要功能。”
+
+询问 GitHub Trending 今日、本周或本月榜单时，工具会直接读取对应榜单页面，把提取出的仓库名附上 GitHub 地址。明确的单一网页查询由工具直接执行，避免 Agent 规划阶段跳过联网步骤；提取失败时会说明没有取得实时内容。
+
+网页读取仅处理公开地址，返回正文最多 12000 字符；登录页、拒绝抓取的站点或提取失败的页面会明确报错。网页内容作为外部资料处理，不能充当对 Agent 的操作指令。生产环境需要单独启用上述配置并重启 AI 服务。
+
 V6.4 为 Chat、Intent、Memory、Summary、Judge、Embedding、Rerank、图片理解与图片生成接入统一用量上下文。生产环境先把事件写入 PostgreSQL `usage_event_outbox`，后台 worker 再批量上报 Java；无 PostgreSQL 的本地模式才同步降级上报。模型输入、图片内容和 Authorization 不进入用量事件。
 
 ## 执行体验

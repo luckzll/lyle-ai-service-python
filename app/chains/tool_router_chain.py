@@ -35,7 +35,7 @@ def route_tools_with_llm(question: str, context: str = "") -> dict[str, object]:
                 "只返回 JSON，不要解释。可用工具："
                 "health_check=检查服务状态；memory_snapshot=查看用户记忆；memory_stats=记忆统计；"
                 "work_summary=实时读取工作台任务、项目、目标和计划统计；"
-                "web_search=联网搜索最新/实时/外部信息；weather=查询指定城市天气和短期预报；file_parse=解析文件路径；"
+                "web_search=联网搜索最新/实时/外部信息，用户给出网址时读取该网页正文；weather=查询指定城市天气和短期预报；file_parse=解析文件路径；"
                 "image_analyze=识别分析用户给出的图片；image_generate=纯文生图；"
                 "image_edit=根据用户上传的图片和修改指令进行改图/图生图；"
                 "todo=创建待办；calendar=创建日程；list_tools=列出工具。"

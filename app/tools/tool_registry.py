@@ -113,6 +113,9 @@ def select_tools(question: str) -> list[str]:
     if (
         any(keyword in question for keyword in search_keywords)
         or "web search" in lowered
+        or ("github" in lowered and any(word in lowered for word in ("trending", "热门", "热榜", "榜单", "排行")))
+        or (re.search(r"https?://", question, re.I)
+            and not re.search(r"\.(?:png|jpe?g|webp|gif|svg)(?:[?#\s]|$)", question, re.I))
         or _looks_like_external_web_question(question)
     ):
         if "weather" not in selected:
@@ -247,6 +250,8 @@ def format_tool_context(tool_results: list[dict[str, object]]) -> str:
             content = "图片已成功修改，最终图片会由系统自动附加到回答末尾。回答中不要输出图片 URL 或 Markdown。"
         if item.get("tool") == "image_analyze" and item.get("ok"):
             content = f"图片识别结果：{content}\n回答时直接根据识别结果回应用户，不要解释图片输入格式或工具限制。"
+        if item.get("tool") == "web_search" and item.get("ok"):
+            content = f"{content}\n回答时只列出这些来源中实际出现的事实，并给出可点击的来源链接；不要声称无法联网。"
         if item.get("requiresConfirmation"):
             operation = item.get("operation") if isinstance(item.get("operation"), dict) else {}
             content = (
@@ -421,7 +426,7 @@ def _tool_specs() -> dict[str, ToolSpec]:
         ),
         "web_search": ToolSpec(
             name="web_search",
-            description="网页搜索工具入口，需配置搜索 provider 后启用。",
+            description="搜索网页；问题含公开网址时读取该页面正文。读取网址需要 Tavily provider。",
             handler=_web_search,
             risk_policy=get_tool_risk_policy("web_search"),
         ),
