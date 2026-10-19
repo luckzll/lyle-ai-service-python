@@ -20,8 +20,8 @@ _KNOWLEDGE = re.compile(
     r"附件|上传(?:的|了|文件)|\b(?:knowledge\s*base|attached|attachments?|uploaded|"
     r"(?:this|that|the) (?:document|file)|according to the documents?)\b", re.I,
 )
-_EXTERNAL = re.compile(r"联网|网上|网页|上网|互联网|\b(?:web|internet|online)\b", re.I)
-_LIVE = re.compile(r"搜索|搜一下|查一下|最新|实时|新闻|天气|股价|汇率|\b(?:search|latest|news|weather)\b", re.I)
+_EXTERNAL = re.compile(r"联网|网上|网页|上网|互联网|https?://|\b(?:web|internet|online)\b", re.I)
+_LIVE = re.compile(r"搜索|搜一下|查一下|最新|实时|新闻|天气|股价|汇率|GitHub.{0,20}(?:trending|热门|热榜|榜单|排行)|\b(?:search|latest|news|weather)\b", re.I)
 _GREETING = re.compile(r"(?:你好|您好|嗨|早上好|下午好|晚上好|谢谢|好的|随便聊聊|聊聊天|你是谁|你能做什么|你在干什么呢|hi|hello|thanks|ok)[\s!！。,.，?？]*", re.I)
 _SELF_CONTAINED = re.compile(
     r"^(?:(?:请|帮我|麻烦)(?:你)?\s*)?(?:什么是|解释|介绍一下|科普|为什么|怎么理解|"

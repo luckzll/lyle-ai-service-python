@@ -1,3 +1,5 @@
+import re
+
 from app.core.config import settings
 from app.chat_attachments import attachment_planner_context
 from app.chains.tool_router_chain import route_tools_with_llm
@@ -18,6 +20,16 @@ def run_tool_agent(
     knowledge_base_ids: list[str] | None = None,
 ) -> dict[str, object]:
     from app.agents.native_tool_loop import available, run_native_loop
+    if use_tools and settings.tool_agent_enabled and _direct_web_search_request(question):
+        result = execute_tool("web_search", user_id, conversation_id, question)
+        return {
+            "tool_results": [result],
+            "tool_context": format_tool_context([result]),
+            "selected_tools": ["web_search"],
+            "decision": {"router": "direct_web_search", "should_call_tools": True,
+                         "reason": "用户请求读取网页或获取当前网络信息。"},
+            "skipped": False,
+        }
     if use_tools and settings.tool_agent_enabled and available():
         return run_native_loop(user_id, conversation_id, question, knowledge_base_ids)
     decision = decide_tool_use(user_id, conversation_id, question, use_tools)
@@ -43,6 +55,12 @@ def run_tool_agent(
         "decision": decision,
         "skipped": False,
     }
+
+
+def _direct_web_search_request(question: str) -> bool:
+    if select_tools(question) != ["web_search"]:
+        return False
+    return not bool(re.search(r"不(?:要|用|必|需)?(?:再)?(?:联网|上网|搜索)|禁止联网|离线|\boffline\b|without (?:web|internet)|don't search", question, re.I))
 
 
 def decide_tool_use(
@@ -199,6 +217,8 @@ def _tool_question(tool_name: str, question: str, tool_inputs: object) -> str:
         return question
     rewritten = str(tool_inputs.get(tool_name) or "").strip()
     if not rewritten:
+        return question
+    if tool_name == "web_search" and ("http://" in question.lower() or "https://" in question.lower()):
         return question
     if tool_name in {"image_generate", "image_edit", "web_search"}:
         return rewritten
