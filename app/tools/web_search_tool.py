@@ -128,7 +128,12 @@ def _extract_tavily(url: str, query: str | None = None) -> dict[str, object]:
         result = results[0]
     raw_content = str((result or {}).get("raw_content") or "").strip()
     if not raw_content:
-        return {"ok": False, "content": f"无法读取该网页的正文：{url}", "results": []}
+        return {
+            "ok": False,
+            "content": "未能读取该网页的正文，页面可能需要登录或暂不支持自动读取。请上传截图、文件或粘贴正文后继续。",
+            "results": [], "pageUrl": url,
+            "error": {"code": "PAGE_CONTENT_UNAVAILABLE", "retryable": False},
+        }
     if urlparse(url).hostname == "github.com" and urlparse(url).path == "/trending":
         raw_content = re.sub(
             r"(?m)^##\s+([A-Za-z0-9_.-]{1,39})\s*/\s*([A-Za-z0-9_.-]{1,100})\s*$",
@@ -145,6 +150,33 @@ def _extract_tavily(url: str, query: str | None = None) -> dict[str, object]:
         "provider": "tavily",
         "cached": False,
     }
+
+
+def unavailable_page_answer(question: str, tool_results: list[dict[str, object]], *,
+                            has_other_context: bool = False) -> str | None:
+    """Explain a missing sole source without asking a model to invent its contents."""
+    urls = _URL_PATTERN.findall(question)
+    if has_other_context or len(urls) != 1:
+        return None
+    url = _page_url(question)
+    if any(item.get("ok") or item.get("tool") != "web_search" for item in tool_results):
+        return None
+    for item in tool_results:
+        error = item.get("error") or {}
+        if (isinstance(error, dict) and error.get("code") == "PAGE_CONTENT_UNAVAILABLE"
+                and item.get("pageUrl") == url):
+            answer = (
+                "我未能读取这个链接的正文，因此还不能根据链接分析实际内容。"
+                "页面可能需要登录或暂不支持自动读取。\n\n"
+                "请上传相关截图、文件，或直接粘贴正文。"
+            )
+            if (urlparse(url).hostname or "").lower() in {"www.xiaohongshu.com", "xiaohongshu.com", "xhslink.com"}:
+                answer += (
+                    "如果要分析小红书账号，可以提供主页、几篇代表性笔记，以及浏览、点赞、收藏等数据，"
+                    "我会据此分析内容定位和改进方向。"
+                )
+            return answer
+    return None
 
 
 def _search_tavily(query: str) -> list[dict[str, str]]:
