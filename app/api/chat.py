@@ -433,7 +433,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                 image_answer = None if overview_answer else _image_generate_answer(request.message, state.get("tool_results") or [])
                 page_answer = unavailable_page_answer(
                     request.message, tool_results,
-                    has_other_context=bool(contexts or request.attachments or project_context
+                    has_other_context=bool(contexts or request.attachments or project_prompt_context
                                            or candidate_plans or project_candidates["candidateGoals"]),
                 )
                 if page_answer:

@@ -272,6 +272,10 @@ def test_unreadable_page_returns_guidance_even_when_selected_model_is_unavailabl
     state["tool_results"] = [{"tool": "web_search", "ok": False, "pageUrl": url,
                               "error": {"code": "PAGE_CONTENT_UNAVAILABLE"}}]
     monkeypatch.setattr(settings, "reviewer_enabled", True)
+    monkeypatch.setattr(chat, "should_resolve_project", lambda *_: True)
+    monkeypatch.setattr(chat, "_project_context_for_response", lambda *_: {
+        "resolver": {"projectId": None, "requiresClarification": False}, "context": {},
+    })
     monkeypatch.setattr(chat, "stream_answer", lambda *args: pytest.fail("no page source to analyze"))
     monkeypatch.setattr("app.agents.reviewer_agent.invoke_reviewer_chain",
                         lambda *args: pytest.fail("fixed guidance must not require a model"))
