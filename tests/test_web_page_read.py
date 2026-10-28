@@ -71,7 +71,48 @@ def test_extract_reports_empty_success_as_failure(monkeypatch):
     ))
     result = web_search_tool.search_web(PAGE_URL)
     assert not result["ok"]
-    assert "无法读取" in result["content"]
+    assert "未能读取" in result["content"]
+    assert "上传截图" in result["content"]
+    assert result["error"]["code"] == "PAGE_CONTENT_UNAVAILABLE"
+    assert result["pageUrl"] == PAGE_URL
+    assert web_search_tool.unavailable_page_answer(PAGE_URL, [{"tool": "web_search", **result}])
+
+
+@pytest.mark.parametrize("other_context,extra,question", [
+    (True, [], PAGE_URL),
+    (False, [{"tool": "web_search", "ok": True}], PAGE_URL),
+    (False, [{"tool": "todo", "ok": False}], PAGE_URL),
+    (False, [], PAGE_URL + " https://example.com/second"),
+    (False, [], "https://example.com/different"),
+])
+def test_missing_page_does_not_replace_other_material_or_tool_work(other_context, extra, question):
+    result = {"tool": "web_search", "ok": False, "pageUrl": PAGE_URL,
+              "error": {"code": "PAGE_CONTENT_UNAVAILABLE"}}
+    assert web_search_tool.unavailable_page_answer(
+        question, [result, *extra], has_other_context=other_context,
+    ) is None
+
+
+def test_nonstreaming_graph_also_handles_missing_page_without_a_model(monkeypatch):
+    from app.graphs import multi_agent_graph as graph
+
+    monkeypatch.setattr(graph, "run_writer_agent", lambda *args: pytest.fail("missing page has no source to analyze"))
+    monkeypatch.setattr("app.agents.reviewer_agent.invoke_reviewer_chain",
+                        lambda *args: pytest.fail("fixed guidance needs no model review"))
+    monkeypatch.setattr(settings, "reviewer_enabled", True)
+    state = {
+        "user_id": "page-user", "conversation_id": "page-conversation", "question": PAGE_URL,
+        "contexts": [], "memory": {}, "memory_context": "", "tool_context": "",
+        "supplemental_context": "", "review_feedback": "", "review_attempts": 0,
+        "agent_trace": [], "rag_sufficiency": {},
+        "tool_results": [{"tool": "web_search", "ok": False, "pageUrl": PAGE_URL,
+                          "error": {"code": "PAGE_CONTENT_UNAVAILABLE"}}],
+    }
+    written = graph.writer_agent_node(state)
+    assert "未能读取" in written["answer"]
+    reviewed = graph.reviewer_agent_node(written)
+    assert reviewed["review"]["approved"]
+    assert reviewed["review"]["modelReviewUsed"] is False
 
 
 def test_github_trending_request_calls_web_tool_without_model_planning(monkeypatch):

@@ -19,6 +19,7 @@ from app.chat_attachments import current_attachments
 from app.memory.overview import build_memory_overview_answer
 from app.memory.conversation_context import load_conversation_context
 from app.rag.query_context import query_context_scope
+from app.tools.web_search_tool import unavailable_page_answer
 
 
 logger = logging.getLogger(__name__)
@@ -290,7 +291,12 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
         state["memory"],
         state["tool_results"],
     )
-    answer = overview_answer or run_writer_agent(
+    page_answer = unavailable_page_answer(
+        state["question"], state["tool_results"],
+        has_other_context=bool(state["contexts"] or state["supplemental_context"]
+                               or (attachments and attachments.records)),
+    )
+    answer = page_answer or overview_answer or run_writer_agent(
         state["question"],
         state["contexts"],
         memory_context,
@@ -316,6 +322,7 @@ def writer_agent_node(state: MultiAgentState) -> MultiAgentState:
                 "rewriteAttempt": state["review_attempts"],
                 "writerInput": writer_input,
                 "deterministicMemoryOverview": bool(overview_answer),
+                "deterministicPageUnavailable": bool(page_answer),
                 "elapsedMs": _elapsed_ms(started),
             },
         ],
@@ -439,6 +446,10 @@ def reviewer_agent_node(state: MultiAgentState) -> MultiAgentState:
             memory=state["memory"],
             rag_sufficiency=state["rag_sufficiency"],
             tool_results=state["tool_results"],
+            **({"model_review_enabled": False} if any(
+                item.get("deterministicPageUnavailable") for item in state["agent_trace"]
+                if item.get("agent") == "writer_agent"
+            ) else {}),
         )
     except TypeError:
         review = run_reviewer_agent(

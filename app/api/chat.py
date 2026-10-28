@@ -35,6 +35,7 @@ from app.security.chat_debug import build_safe_chat_debug
 from app.workflows.chat_suggestions import build_execution_suggestions
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
+from app.tools.web_search_tool import unavailable_page_answer
 from app.tools.image_tool import (
     analyze_image_from_question,
     build_image_batch_result,
@@ -286,7 +287,8 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
                 raise
 
     def failure(exc):
-        logger.error("Chat stream failed. exception_type=%s", type(exc).__name__)
+        logger.error("Chat stream failed. exception_type=%s status_code=%s",
+                     type(exc).__name__, getattr(exc, "status_code", None))
         return _sse("error", {"message": _friendly_stream_error(exc)})
 
     def write_memory_after_stream():
@@ -387,6 +389,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
         answer_parts = []
         used_v3_preview = False
         used_memory_overview = False
+        used_unavailable_page = False
         agent_trace = list(state.get("agent_trace") or [])
         if project_context:
             agent_trace.append({
@@ -428,7 +431,16 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                     state.get("tool_results") if isinstance(state.get("tool_results"), list) else [],
                 )
                 image_answer = None if overview_answer else _image_generate_answer(request.message, state.get("tool_results") or [])
-                if overview_answer:
+                page_answer = unavailable_page_answer(
+                    request.message, tool_results,
+                    has_other_context=bool(contexts or request.attachments or project_context
+                                           or candidate_plans or project_candidates["candidateGoals"]),
+                )
+                if page_answer:
+                    used_unavailable_page = True
+                    answer = page_answer
+                    answer_parts.append(answer)
+                elif overview_answer:
                     used_memory_overview = True
                     answer = overview_answer
                     answer_parts.append(answer)
@@ -522,6 +534,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                     "rewriteAttempt": 0,
                     "streaming": True,
                     "deterministicMemoryOverview": used_memory_overview,
+                    "deterministicPageUnavailable": used_unavailable_page,
                     "writerInput": writer_input,
                     "elapsedMs": writer_duration_ms,
                     "timings": writer_timings,
@@ -537,7 +550,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                     project_context=project_context,
                     candidate_goals=project_candidates["candidateGoals"],
                     candidate_plans=candidate_plans,
-                    model_review_enabled=review_enabled,
+                    model_review_enabled=review_enabled and not used_unavailable_page,
                 )
                 model_review_used = bool(review.get("modelReviewUsed", not review.get("skipped", True)))
                 logger.info(
@@ -564,6 +577,7 @@ def _text_chat_frames(request, usage_context, final_answer_holder, attachment_co
                 if (
                     not used_v3_preview
                     and not used_memory_overview
+                    and not used_unavailable_page
                     and not review.get("approved", True)
                     and review_max_retry >= 1
                 ):
@@ -1149,6 +1163,8 @@ def _friendly_stream_error(exc: Exception) -> str:
         return str(exc)
     text = str(exc)
     lowered = text.lower()
+    if getattr(exc, "status_code", None) == 403 or type(exc).__name__ == "PermissionDeniedError":
+        return "当前所选模型的访问被模型服务拒绝（403），请切换其他模型后重试，或联系管理员检查模型访问权限。"
     if "timeout" in lowered or "timed out" in lowered:
         return "模型响应超时了，请稍后重试，或换一个更短的问题。"
     if "api key" in lowered or "unauthorized" in lowered or "401" in lowered:

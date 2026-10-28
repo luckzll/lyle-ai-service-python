@@ -5,6 +5,8 @@ import json
 from threading import Event
 
 import pytest
+import httpx
+from openai import PermissionDeniedError
 
 from app.chat_progress import emit_step
 from app.chat_reasoning import emit_reasoning, finish_reasoning
@@ -244,6 +246,43 @@ def test_producer_failure_marks_active_step_and_never_emits_done(monkeypatch, st
     assert any(name == "error" for name, _ in events)
     assert not any(name in {"done", "meta"} for name, _ in events)
     assert "sensitive-provider-secret" not in json.dumps(events)
+
+
+def test_model_permission_denial_reports_actionable_error_without_provider_secrets(monkeypatch, stream_env):
+    def denied(*args):
+        raise PermissionDeniedError(
+            "sensitive-provider-secret api_key_source: payg",
+            response=httpx.Response(403, request=httpx.Request("POST", "https://provider.test")),
+            body={"error": {"type": "access_denied"}},
+        )
+        yield
+
+    monkeypatch.setattr(chat, "stream_answer", denied)
+    events = asyncio.run(collect(chat.chat_stream(request())))
+    message = next(data["message"] for name, data in events if name == "error")
+    assert "403" in message and "切换其他模型" in message
+    assert "sensitive-provider-secret" not in json.dumps(events)
+    assert "api_key_source" not in json.dumps(events)
+    assert not any(name == "done" for name, _ in events)
+
+
+def test_unreadable_page_returns_guidance_even_when_selected_model_is_unavailable(monkeypatch, stream_env):
+    state, _ = stream_env
+    url = "https://www.xiaohongshu.com/user/profile/example"
+    state["tool_results"] = [{"tool": "web_search", "ok": False, "pageUrl": url,
+                              "error": {"code": "PAGE_CONTENT_UNAVAILABLE"}}]
+    monkeypatch.setattr(settings, "reviewer_enabled", True)
+    monkeypatch.setattr(chat, "stream_answer", lambda *args: pytest.fail("no page source to analyze"))
+    monkeypatch.setattr("app.agents.reviewer_agent.invoke_reviewer_chain",
+                        lambda *args: pytest.fail("fixed guidance must not require a model"))
+    req = request()
+    req.message = url + "\n你能分析一下我的小红书内容吗？"
+    req.aiConfig = {"CHAT_MODEL_PROVIDER": "openai", "CHAT_MODEL_NAME": "openai/gpt-5.5"}
+    events = asyncio.run(collect(chat.chat_stream(req)))
+    answer = "".join(data["text"] for name, data in events if name == "delta")
+    assert "未能读取" in answer and "上传" in answer and "小红书" in answer
+    assert any(name == "done" for name, _ in events)
+    assert not any(name == "error" for name, _ in events)
 
 
 def test_incremental_review_never_calls_model_even_if_global_switch_changes(monkeypatch, stream_env):
