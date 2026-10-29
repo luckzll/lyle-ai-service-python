@@ -43,6 +43,27 @@ from app.workflows.workflow_store import create_workflow, create_workflow_from_p
 router = APIRouter()
 
 
+@router.get("/workbench/integrations/{user_id}")
+def integration_catalog(user_id: str):
+    from app.tools.integrated_tools import catalog
+    from app.tools.integration_presets import presets_for_user
+    return {**catalog(user_id), "presets": presets_for_user(user_id)}
+
+
+@router.post("/workbench/integrations/{user_id}/invoke")
+def integration_invoke(user_id: str, request: dict[str, object]):
+    import re
+    from fastapi import HTTPException
+    from app.tools.integrated_tools import ToolSelection, invoke
+    selection = ToolSelection.model_validate(request.get("toolSelection") or {})
+    session_id = str(request.get("sessionId") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", session_id):
+        raise HTTPException(400, "本地对话标识无效。")
+    # Models cannot supply approval booleans; writes always use durable operations.
+    return invoke(user_id, "local:" + session_id, str(request.get("name") or ""),
+                  request.get("arguments") or {}, selection)
+
+
 @router.get("/workbench/mcp/{user_id}/servers")
 def mcp_servers(user_id: str) -> dict[str, object]:
     return {"items": list_mcp_servers(user_id)}

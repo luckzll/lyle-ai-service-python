@@ -93,10 +93,10 @@ def _invoke(user_id: str, conversation_id: str | None, selected: dict, arguments
             operation_type="mcp.invoke", risk_level=effective_risk(tool),
             summary=mask_secrets(f"{tool['toolName']}：{json.dumps(arguments, ensure_ascii=False)}")[:4000],
             payload={"toolId": tool["id"], "arguments": arguments, "fingerprint": fingerprint(tool),
-                     "serverFingerprint": server_fingerprint(user_id, tool)},
+                     "serverFingerprint": server_fingerprint(user_id, tool), "sessionScope": conversation_id},
             source_text=question,
         )
-    result = invoke_mcp_tool(user_id, int(tool["id"]), {"arguments": arguments})
+    result = invoke_mcp_tool(user_id, int(tool["id"]), {"arguments": arguments, "sessionScope": conversation_id})
     return {**result, "tool": f"mcp_{tool['id']}",
             "content": mask_secrets(json.dumps(result.get("result", {}), ensure_ascii=False))[:12000]}
 
@@ -126,5 +126,6 @@ def _execute_confirmed(user_id: str, operation: dict) -> dict:
     result = invoke_mcp_tool(user_id, int(tool["id"]), {
         "arguments": payload["arguments"], "confirmed": True,
         "secondConfirmed": operation["operationType"] == "mcp.invoke.second",
+        "sessionScope": payload.get("sessionScope"),
     })
     return {**result, "content": mask_secrets(json.dumps(result.get("result", {}), ensure_ascii=False))[:12000]}

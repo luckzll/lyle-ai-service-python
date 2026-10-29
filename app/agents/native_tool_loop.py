@@ -20,6 +20,7 @@ from app.tools.slots import ATTACHMENT_ARGUMENT_MODELS
 from app.tools.tool_registry import format_tool_context
 from app.tools import agent_mcp
 from app.agents.scene_router import route_scene, rank_mcp_tools
+from app.tools import integrated_tools
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ def run_native_loop(user_id: str, conversation_id: str | None, question: str,
     schemas.extend(attachment_tool_schemas(user_id))
     mcp_tools = {}
     try:
-        mcp_tools = rank_mcp_tools(agent_mcp.catalog(user_id), question)
+        mcp_tools = rank_mcp_tools(integrated_tools.selected_mcp(user_id, integrated_tools.current_selection()), question)
     except Exception:
         logger.warning("Native loop MCP catalog unavailable", exc_info=False)
     # Stable, bounded catalog; names use DB IDs to avoid cross-server name collisions.
@@ -49,6 +50,11 @@ def run_native_loop(user_id: str, conversation_id: str | None, question: str,
             "name": "knowledge_search", "description": "在本轮已授权的知识库中检索证据，可改写查询后再次检索。",
             "parameters": SearchArgs.model_json_schema(),
         }})
+    selection = integrated_tools.current_selection()
+    if selection and selection.workspaceId:
+        from app.cli.workspace_store import get_workspace
+        get_workspace(user_id, selection.workspaceId)
+        schemas.extend(integrated_tools.cli_schemas())
     allowed = {schema["function"]["name"] for schema in schemas}
     now = datetime.now(ZoneInfo("Asia/Shanghai")).isoformat()
     recent = []
@@ -135,6 +141,8 @@ def run_native_loop(user_id: str, conversation_id: str | None, question: str,
                                 result = {"ok": True, "content": json.dumps(evidence, ensure_ascii=False)}
                             elif name in mcp_tools:
                                 result = agent_mcp.invoke(user_id, conversation_id, mcp_tools[name], raw, question)
+                            elif name in integrated_tools.CLI_ACTIONS:
+                                result = integrated_tools.invoke(user_id, conversation_id, name, raw, selection, question)
                             else:
                                 result = execute_native(name, raw, user_id, conversation_id, question)
                             invocation.finish(result)

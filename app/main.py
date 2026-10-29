@@ -95,6 +95,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         stop_event.set()
+        from app.mcp.session_pool import close_all
+        await asyncio.to_thread(close_all)
         if schema_task is not None:
             await schema_task
         if notification_task is not None:

@@ -1,4 +1,10 @@
 FROM python:3.12-slim
+ARG INSTALL_AGENT_TOOLS=false
+RUN if [ "$INSTALL_AGENT_TOOLS" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends git ripgrep gh nodejs npm \
+      && pip install --no-cache-dir uv==0.13.6 \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
 WORKDIR /app
 COPY requirements.txt requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock
