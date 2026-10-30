@@ -1,5 +1,6 @@
 """Reviewed upstream recipes. Registration does not imply installation or readiness."""
 from copy import deepcopy
+import os
 import re
 
 PRESETS = [
@@ -22,6 +23,10 @@ PRESETS = [
 
 def presets_for_user(user_id):
     items = deepcopy(PRESETS)
+    # Transport discovery cannot establish that this host can run a browser
+    # alongside the AI service. Operators can withhold the recipe until tested.
+    if os.getenv("LYLE_ENABLE_PLAYWRIGHT_PRESET", "true").strip().lower() not in {"true", "1", "yes"}:
+        items = [item for item in items if item["id"] != "playwright"]
     # A deployment must configure each account's own credential. Never share an
     # operator's GitHub token with every tenant that clicks a recommendation.
     suffix = str(user_id)
