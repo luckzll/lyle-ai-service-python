@@ -98,6 +98,15 @@ def test_unavailable_database_does_not_hide_local_tools_or_recommendations(monke
     assert result["tools"] == [] and result["cli"]
 
 
+@pytest.mark.parametrize("enabled,expected", [("false", False), ("true", True)])
+def test_deployment_can_withhold_unverified_browser_recipe(monkeypatch, enabled, expected):
+    from app.tools.integration_presets import presets_for_user
+    monkeypatch.setenv("LYLE_ENABLE_PLAYWRIGHT_PRESET", enabled)
+    presets = presets_for_user("42")
+    assert any(item["id"] == "playwright" for item in presets) is expected
+    assert {"github", "fetch", "ripgrep", "github-cli"} <= {item["id"] for item in presets}
+
+
 def test_local_project_can_call_selected_mcp_without_file_connection(monkeypatch):
     monkeypatch.setattr(bridge.agent_mcp, "catalog", lambda user: {"mcp_7": tool()})
     observed = []
