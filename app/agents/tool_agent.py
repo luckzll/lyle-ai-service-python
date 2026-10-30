@@ -20,7 +20,10 @@ def run_tool_agent(
     knowledge_base_ids: list[str] | None = None,
 ) -> dict[str, object]:
     from app.agents.native_tool_loop import available, run_native_loop
-    if use_tools and settings.tool_agent_enabled and _direct_web_search_request(question):
+    from app.tools.integrated_tools import current_selection
+    selection = current_selection()
+    explicit_tools = selection and (selection.mcpToolIds or selection.workspaceId)
+    if use_tools and settings.tool_agent_enabled and not explicit_tools and _direct_web_search_request(question):
         result = execute_tool("web_search", user_id, conversation_id, question)
         return {
             "tool_results": [result],
@@ -32,6 +35,10 @@ def run_tool_agent(
         }
     if use_tools and settings.tool_agent_enabled and available():
         return run_native_loop(user_id, conversation_id, question, knowledge_base_ids)
+    if use_tools and explicit_tools:
+        return {"tool_results": [], "selected_tools": [], "skipped": True,
+                "tool_context": "本轮没有执行所选的 MCP 或项目命令。需要启用工具智能体和原生工具调用，并配置支持工具调用的意图模型；不得声称操作完成。",
+                "decision": {"router": "selected_tools_unavailable", "should_call_tools": False, "reason": "所选工具的模型调用通道当前不可用。"}}
     decision = decide_tool_use(user_id, conversation_id, question, use_tools)
     if not decision["should_call_tools"]:
         return {

@@ -97,7 +97,8 @@ def invoke_mcp_tool(user_id: str, tool_id: int, payload: dict[str, Any]) -> dict
         raise HTTPException(status_code=400, detail=f"暂不支持调用内置 MCP Tool：{tool_name}")
     args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
     try:
-        result = run_mcp_tool_call(server, tool_name, args)
+        scope = payload.get("sessionScope")
+        result = run_mcp_tool_call(server, tool_name, args, **({"session_scope": (user_id, str(scope)[:160])} if scope else {}))
     except HTTPException as exc:
         write_execution_audit(
             user_id=user_id,

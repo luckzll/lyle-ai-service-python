@@ -92,7 +92,11 @@ def run_mcp_tool_discovery(server: dict[str, Any]) -> list[dict[str, Any]]:
     return asyncio.run(_discover_tools(server))
 
 
-def run_mcp_tool_call(server: dict[str, Any], tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+def run_mcp_tool_call(server: dict[str, Any], tool_name: str, arguments: dict[str, Any], *, session_scope=None) -> dict[str, Any]:
+    if session_scope is not None:
+        from app.mcp.session_pool import call
+        result = call(server, session_scope[0], session_scope[1], tool_name, arguments)
+        return _tool_result(result)
     return asyncio.run(_call_tool(server, tool_name, arguments))
 
 
@@ -137,6 +141,10 @@ async def _call_tool(server: dict[str, Any], tool_name: str, arguments: dict[str
         raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=_connection_error(exc)) from exc
+    return _tool_result(result)
+
+
+def _tool_result(result):
     payload = result.model_dump(mode="json", by_alias=True, exclude_none=True)
     return {
         "ok": not bool(result.isError),

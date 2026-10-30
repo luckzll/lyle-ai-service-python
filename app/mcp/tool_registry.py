@@ -106,6 +106,9 @@ def update_mcp_server_status(user_id: str, server_id: int, status: str) -> dict[
         conn.commit()
     if row is None:
         raise HTTPException(status_code=404, detail="MCP Server 不存在。")
+    if normalized == "disabled":
+        from app.mcp.session_pool import close_server
+        close_server(server_id)
     return get_mcp_server(user_id, server_id)
 
 

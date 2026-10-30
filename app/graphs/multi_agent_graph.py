@@ -155,6 +155,15 @@ class MultiAgentState(TypedDict):
 def supervisor_node(state: MultiAgentState) -> MultiAgentState:
     started = perf_counter()
     supervisor = run_supervisor_agent(state["question"], state["knowledge_base_ids"])
+    # Explicitly connected capabilities must not be hidden by the legacy keyword
+    # router (for example, "运行测试" has no built-in tool trigger).
+    from app.tools.integrated_tools import current_selection
+    from app.chat_execution_plan import is_self_contained
+    selection = current_selection()
+    if selection and (selection.mcpToolIds or selection.workspaceId) and not is_self_contained(state["question"]):
+        supervisor = {**supervisor, "use_tools": True,
+                      "next_agents": [*filter(lambda name: name != "writer_agent", supervisor["next_agents"]), "tool_agent", "writer_agent"]}
+        supervisor["next_agents"] = list(dict.fromkeys(supervisor["next_agents"]))
     logger.info(
         "context_graph timing supervisor_done. user_id=%s conversation_id=%s elapsed=%.3fs intent=%s use_tools=%s use_rag=%s",
         state["user_id"],

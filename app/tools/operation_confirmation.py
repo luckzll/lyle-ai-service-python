@@ -121,7 +121,7 @@ def confirm_pending_operation(user_id: str, operation_id: int) -> dict[str, obje
     now = datetime.now(UTC)
     with postgres_connection() as conn:
         operation = _get_operation_for_update(conn, user_id, operation_id)
-        if str(operation.get("operationType", "")).startswith("mcp.invoke"):
+        if str(operation.get("operationType", "")).startswith("mcp.invoke") or operation.get("operationType") == "cli.selected":
             conn.commit()
             return _confirm_external_operation(user_id, operation_id)
         if operation.get("status") in {"confirmed", "failed"}:
@@ -253,6 +253,10 @@ def _execute_operation(user_id: str, operation: dict[str, object]) -> dict[str, 
     operation_type = str(operation.get("operationType") or "")
     payload = operation.get("payload") if isinstance(operation.get("payload"), dict) else {}
     conversation_id = str(operation.get("conversationId") or "") or None
+
+    if operation_type == "cli.selected":
+        from app.tools.integrated_tools import execute_confirmed
+        return execute_confirmed(user_id, operation)
 
     if operation_type in {"mcp.invoke", "mcp.invoke.second"}:
         from app.tools.agent_mcp import execute_confirmed

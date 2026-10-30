@@ -33,6 +33,7 @@ from app.projects.project_resolver import resolve_project, should_resolve_projec
 from app.schemas.chat import ChatRequest, ChatResponse
 from app.security.chat_debug import build_safe_chat_debug
 from app.workflows.chat_suggestions import build_execution_suggestions
+from app.tools.integrated_tools import selection_scope
 from app.tools.task_tool import extract_candidate_tasks
 from app.tools.tool_registry import select_tools
 from app.tools.web_search_tool import unavailable_page_answer
@@ -98,7 +99,7 @@ def write_memory_in_background(
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest, background_tasks: BackgroundTasks) -> ChatResponse:
-    with attachment_scope(request):
+    with attachment_scope(request), selection_scope(request.toolSelection):
         return _chat(request, background_tasks)
 
 
@@ -263,7 +264,7 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
         def tool_call(event):
             publish(_sse("tool.call", {**event, "turnId": request.turn_id}))
 
-        with progress_scope(progress), reasoning_scope(reasoning), tool_scope(tool_call), attachment_scope(request):
+        with progress_scope(progress), reasoning_scope(reasoning), tool_scope(tool_call), attachment_scope(request), selection_scope(request.toolSelection):
             try:
                 attachment_context, attachment_results = build_turn_attachment_context(request)
                 image_tool = _stream_image_tool(message_with_image_attachments(request))

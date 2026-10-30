@@ -1,4 +1,5 @@
 from pydantic import BaseModel, Field
+from app.tools.integrated_tools import ToolSelection
 
 
 class ChatAttachmentStorage(BaseModel):
@@ -32,6 +33,7 @@ class ChatRequest(BaseModel):
     turnId: str | None = None
     sourceMessageId: str | None = None
     projectId: int | None = None
+    toolSelection: ToolSelection | None = None
     message: str
     knowledgeBaseIds: list[str] = Field(default_factory=list)
     knowledgeScope: dict[str, object] = Field(default_factory=dict)
